@@ -328,7 +328,8 @@ def step_patches(ctx: Ctx) -> None:
     if st.get('all_applied'):
         say('  already applied')
     elif ctx.dry_run:
-        say(f'  would apply: {", ".join(st.get("missing", [])) or "all"}')
+        todo = [p.get('name') or p.get('file') for p in st.get('patches', []) if p.get('state') != 'applied']
+        say(f'  would apply: {", ".join(map(str, todo)) or "nothing"}')
     else:
         res = hermes_patch.apply(ctx.hermes_agent_dir)
         if not res.get('ok'):

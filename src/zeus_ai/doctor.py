@@ -40,8 +40,14 @@ def run_checks(ctx: I.Ctx) -> list[dict]:
     try:
         from . import hermes_patch
         ps = hermes_patch.status(ctx.hermes_agent_dir)
-        _check(r, 'Hermes safety patches', OK if ps.get('all_applied') else FAIL,
-               'applied' if ps.get('all_applied') else 'not applied: ' + ', '.join(ps.get('missing', [])) + ' (run `zeus hermes-patch apply`)')
+        todo = [p.get('name') or p.get('file') for p in ps.get('patches', []) if p.get('state') != 'applied']
+        if not ps.get('ok'):
+            _check(r, 'Hermes safety patches', FAIL, str(ps.get('error') or 'could not read the Hermes install'))
+        elif ps.get('all_applied'):
+            _check(r, 'Hermes safety patches', OK, 'applied')
+        else:
+            _check(r, 'Hermes safety patches', WARN if ps.get('required_applied') else FAIL,
+                   'not applied: ' + ', '.join(map(str, todo)) + ' (run `zeus hermes-patch apply`)')
     except ImportError:
         _check(r, 'Hermes safety patches', FAIL, 'patch module missing from this build')
 

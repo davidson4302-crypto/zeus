@@ -1,0 +1,678 @@
+diff --git a/agent/conversation_loop.py b/agent/conversation_loop.py
+index d88600832e5b757bdfe2c5d50d77486bc922202d..ed61f87052d27bec634fd1c5b6da477d10095449 100644
+--- a/agent/conversation_loop.py
++++ b/agent/conversation_loop.py
+@@ -1634,6 +1634,9 @@ def _run_conversation_turn(
+         s.active_system_prompt = _sync_failover_system_message(agent, None, s.active_system_prompt)
+ 
+     while (s.api_call_count < agent.max_iterations and agent.iteration_budget.remaining > 0) or agent._budget_grace_call:
++        if getattr(agent, "_work_model_tier", None):
++            from agent.work_model_tiers import advance_after_tools
++            advance_after_tools(agent, s)
+         if _run_phase(begin_iteration, agent, s).action == "break":
+             break
+         _run_phase(prepare_iteration, agent, s)
+diff --git a/agent/work_model_tiers.py b/agent/work_model_tiers.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..2c4529764d065a257ab206a2b5db5165841a6c98
+--- /dev/null
++++ b/agent/work_model_tiers.py
+@@ -0,0 +1,192 @@
++"""Opt-in routing for ordinary agent turns and delegated worker goals.
++
++Only locally configured routes are possible. User text chooses a category,
++never a provider, model, budget, toolset, approval or account.
++"""
++from __future__ import annotations
++
++import logging
++import re
++
++log = logging.getLogger(__name__)
++_RECOVERY = re.compile(r"\b(debug(?:ging)?|troubleshoot(?:ing)?|root[ -]cause|deadlock|stack trace|crash loop|disaster recovery|incident recovery|(?:run|perform|start|execute|attempt) (?:a |the |our )?recovery|recover(?:y)? (?:from|after)|roll ?back.*(?:fail|corrupt)|(?:restore|recover|repair|diagnose|fix)\b.{0,80}\b(?:crash|failed|failing|broken|corrupt|incident|outage|regression|exception|pipeline|deployment|gateway|failure|backup))\b", re.I)
++_WORKFLOW = re.compile(r"\b(multi[ -](?:step|tool)|end[ -]to[ -]end|long[ -]running|cross[ -](?:tool|system)|(?:run|execute|carry out|coordinate|finish|complete|orchestrate|automate)\b.{0,60}\b(?:workflow|pipeline|migration|rollout))\b", re.I)
++_ACTION = re.compile(r"\b(find|search|check|look up|read|fetch|pull|retrieve|open|inspect|compare|cross[- ]reference|match|reconcile|update|write|draft|send|email|post|save|export|import|create|schedule|verify|summarize|compile|generate|build|test|sync|scan|collect|review)\b", re.I)
++_TOOL_ACTION = re.compile(r"\b(send|email|schedule|book|upload|download|sync|restore|install|deploy|rename|delete|remove|move|copy|append|touch|mkdir|run)\b|(?:\b(?:write|create|save|update|edit|draft|post|export|import)\b.{0,100}(?:\b(?:file|note|ticket|sheet|spreadsheet|email|message|event|document|folder|record|account|issue|contact|calendar|channel|inbox|database|list|task)\b|(?:/|\w+\.(?:md|txt|json|csv|py|pdf)\b)))", re.I)
++_LOOKUP = re.compile(r"\b(look ?up|search|fetch|retrieve|pull up|check|find|show me|list|scan|read|verify|browse|summarize|open)\b", re.I)
++_SOURCE = re.compile(r"\b(inbox|contacts?|calendar|hubspot|crm|slack|emails?|messages?|meeting|files?|spreadsheet|sheet|drive|database|repository|website|web|tickets?|logs?|account|forecast|weather|price|schedule|tasks?)\b", re.I)
++_DEFINE = re.compile(r"^\s*(?:what (?:is|are|does)|define|explain (?:what|the (?:term|meaning))|how does)\b", re.I)
++_CONNECT = re.compile(r"(?:\b(?:then|afterwards|next|finally|once|before|after|also|and)\b|[;\n])", re.I)
++_QUOTES = re.compile(r"```.*?```|(?:^|\n)\s*>[^\n]*", re.S)
++_ROUTE_FIELDS = ('model','provider','base_url','api_mode','reasoning_effort','fallback_providers')
++
++def classify(text, *, worker=False):
++    """Classify an instruction, ignoring fenced code and quoted records."""
++    if not isinstance(text, str):
++        return 'lookup' if worker else None
++    s = _QUOTES.sub(' ', text[:10000]).strip()
++    if not s:
++        return 'lookup' if worker else None
++    if _DEFINE.search(s) and not _CONNECT.search(s) and not _SOURCE.search(s):
++        return 'lookup' if worker else None
++    if _RECOVERY.search(s):
++        return 'recovery'
++    if _WORKFLOW.search(s) or (_CONNECT.search(s) and len(set(m.group().lower() for m in _ACTION.finditer(s))) >= 2):
++        return 'workflow'
++    if _TOOL_ACTION.search(s) or _LOOKUP.search(s) or (_SOURCE.search(s) and ('?' in s or re.match(r"(?:what|when|where|how many|which|who)\b", s, re.I))):
++        return 'lookup'
++    return 'lookup' if worker else None
++
++def configured(config=None):
++    """True when the active profile (or ``config``) sets ``agent.work_model_tiers``."""
++    if config is None:
++        from hermes_cli.config import load_config_readonly
++        config = load_config_readonly()
++    return isinstance(((config or {}).get('agent') or {}).get('work_model_tiers'), dict)
++
++def choose(config, text, *, worker=False):
++    tiers = ((config or {}).get('agent') or {}).get('work_model_tiers')
++    if not isinstance(tiers, dict):
++        return None
++    name = classify(text, worker=worker)
++    if name is None and not worker:
++        main = config.get('model') or {}
++        if not isinstance(main,dict) or not main.get('default') or not main.get('provider'):
++            return None
++        return {'work_tier':'main', 'model':main['default'], 'provider':main['provider'],
++                'reasoning_effort':(config.get('agent') or {}).get('reasoning_effort','medium'),
++                'base_url':main.get('base_url'), 'api_mode':main.get('api_mode'),
++                'fallback_providers':config.get('fallback_providers') or []}
++    row = tiers.get(name)
++    if not isinstance(row, dict) or not all(row.get(k) for k in ('model','provider','reasoning_effort')):
++        return None
++    return {'work_tier':name, **{k:row[k] for k in _ROUTE_FIELDS if k in row}}
++
++def resolve(config, row):
++    """Use the ordinary resolver and its own auth-fallback policy for this tier."""
++    from hermes_cli.runtime_provider import resolve_runtime_with_fallback
++    from hermes_cli.fallback_config import pre_agent_fallback_notice
++    from hermes_constants import parse_reasoning_effort
++    chain = list(row.get('fallback_providers') or [])
++    runtime, backup = resolve_runtime_with_fallback(
++        {**config, 'fallback_providers':chain}, requested=row['provider'],
++        target_model=row['model'], explicit_base_url=row.get('base_url'))
++    current = backup or row
++    if current.get('api_mode'):
++        runtime = {**runtime, 'api_mode':current['api_mode']}
++    notice = None
++    if backup:
++        notice = pre_agent_fallback_notice(row['provider'],row['model'],runtime.get('provider'),backup['model'])
++        chain = chain[chain.index(backup)+1:] if backup in chain else [fb for fb in chain if (fb.get('provider'),fb.get('model')) != (backup.get('provider'),backup.get('model'))]
++    log.info('Work tier %s resolved %s (%s)', row['work_tier'], current['model'], current.get('reasoning_effort'))
++    return current['model'],runtime,parse_reasoning_effort(current.get('reasoning_effort')),chain,notice
++
++def advance_after_tools(agent, state):
++    # Completed tool receipts alone advance the next model decision. Never invoke a tool,
++    # rewrite the message list, retry a completed call or change its authority.
++    current = getattr(agent,'_work_model_tier',None)
++    if current not in ('main','lookup','workflow') or not state.api_call_count:
++        return
++    offset = state.current_turn_user_idx
++    if not isinstance(offset,int) or offset < 0:
++        return
++    requested = {}
++    completed = set()
++    errors = set()
++    for msg in state.messages[offset+1:]:
++        if not isinstance(msg,dict):
++            continue
++        if msg.get('role') == 'assistant':
++            for call in msg.get('tool_calls') or []:
++                if isinstance(call,dict) and call.get('id'):
++                    requested[call['id']] = (call.get('function') or {}).get('name','')
++        elif msg.get('role') == 'tool' and msg.get('tool_call_id') in requested:
++            ident = msg['tool_call_id']
++            completed.add(ident)
++            if msg.get('is_error') is True or msg.get('status') == 'error':
++                errors.add(ident)
++    if not completed:
++        return
++    kinds = {requested[i] for i in completed}
++    target = 'recovery' if len(errors) >= 2 else 'workflow' if len(kinds) >= 2 or len(completed) >= 3 else 'lookup'
++    ranks = {'main':0,'lookup':1,'workflow':2,'recovery':3}
++    if ranks[target] <= ranks[current] or getattr(agent,'_fallback_activated',False):
++        return
++    cfg = getattr(agent,'_work_tier_config',None) or {}
++    route = ((cfg.get('agent') or {}).get('work_model_tiers') or {}).get(target)
++    if not isinstance(route,dict) or agent.provider != route.get('provider'):
++        return
++    # A credential failure can occur after a tool has already succeeded. Keep the existing
++    # route on a failed rebind; this helper never drives a retry.
++    try:
++        from hermes_constants import parse_reasoning_effort
++        from gateway.run_config_loaders import GatewayConfigLoadersMixin
++        if agent.model != route['model']:
++            agent.switch_model(route['model'],agent.provider,api_key=agent.api_key,
++                               base_url=agent.base_url,api_mode=agent.api_mode,
++                               capabilities=getattr(agent,'runtime_capabilities',None))
++        agent.reasoning_config = parse_reasoning_effort(route['reasoning_effort'])
++        GatewayConfigLoadersMixin._apply_fallback_chain_to_agent(agent, route.get('fallback_providers'))
++        agent._work_model_tier = target
++        agent._work_tier_promoted = True
++        log.info('Next decision uses work tier %s after %s completed tool calls',target,len(completed))
++    except (ValueError, KeyError, RuntimeError, OSError) as exc:
++        log.warning('Could not promote work tier after tools: %s',type(exc).__name__)
++
++def bind(agent, config, tier):
++    agent._work_model_tier = tier
++    agent._work_tier_config = config if tier else None
++    agent._work_tier_promoted = False
++
++def gateway_choice(runner, ctx):
++    cfg = ctx.user_config or {}
++    text = getattr(ctx,'title_user_message',None) or getattr(ctx,'persist_user_message',None) or ctx.message
++    row = choose(cfg,text)
++    if row is None:
++        return None
++    # Honor explicit session and channel model/reasoning choices.
++    key = ctx.session_key
++    if key:
++        runner._rehydrate_session_model_override(key)
++        state = runner._peek_session_state(key)
++        conv = getattr(state,'conversation',None)
++        if getattr(conv,'model_override',None) or getattr(conv,'reasoning_override',None) is not None:
++            return None
++    from gateway.run import _get_channel_override
++    source = ctx.source
++    ch = _get_channel_override(getattr(runner,'config',None),source.platform,str(source.chat_id or ''),
++                               thread_id=getattr(source,'thread_id',None),parent_id=getattr(source,'parent_chat_id',None))
++    if ch and (getattr(ch,'model',None) or getattr(ch,'provider',None) or getattr(ch,'reasoning_effort',None)):
++        return None
++    return row
++
++def parent_config(parent, goal=None, *, resolve_route=False):
++    from hermes_cli.config import load_config_readonly
++    from hermes_constants import set_hermes_home_override, reset_hermes_home_override
++    from tools.delegate_tool import _parent_live_home
++    home = _parent_live_home(parent)
++    token = set_hermes_home_override(home) if home is not None else None
++    try:
++        cfg = load_config_readonly()
++        if resolve_route:
++            route = choose(cfg, goal, worker=True)
++            return (route, resolve(cfg,route)) if route else (None, None)
++        return cfg
++    finally:
++        if token is not None:
++            reset_hermes_home_override(token)
++
++def delegate_choice(parent, goal):
++    return choose(parent_config(parent), goal, worker=True)
++
++def cli_choice(config, cli, text):
++    main = config.get('model') or {}
++    if not isinstance(main,dict) or not ((config.get('agent') or {}).get('work_model_tiers')):
++        return None
++    if cli.model != main.get('default') or cli.provider != main.get('provider'):
++        return None
++    # Keep a consciously selected effort and an explicitly resumed conversation route.
++    from hermes_constants import resolve_reasoning_config
++    if getattr(cli,'_resumed',False) or cli.reasoning_config != resolve_reasoning_config(config, cli.model):
++        return None
++    return choose(config,text)
+diff --git a/cron/scheduler.py b/cron/scheduler.py
+index a72ad8459bd1d3b39f2517d7067e5bb14a3d8579..6fcbfa7fa37f68465c55c3bbb0007d26fd844aa7 100644
+--- a/cron/scheduler.py
++++ b/cron/scheduler.py
+@@ -2505,14 +2505,19 @@ def _resolve_cron_agent_setup(job: dict, job_id: str, job_name: str, jc) -> _Cro
+     if setup.blocked is not None:
+         return setup
+ 
+-    setup.runtime, setup.model = _resolve_job_runtime(job, job_id, jc)
+-    setup.fallback_notice = setup.runtime.pop("_fallback_notice", None)
+-    setup.reasoning_config = _resolve_job_reasoning_config(
+-        job, _cfg if isinstance(_cfg, dict) else {}, str(setup.model)
+-    )
+-    # Mid-run provider ladder: same rule as resolution above, so a pinned job cannot be swapped
+-    # onto the global chain by a 5xx/429 either.
+-    setup.fallback_model = _job_fallback_chain(job, _cfg)
++    from agent.work_model_tiers import choose, resolve
++    selected = None
++    if not _job_route_pinned(job) and job.get("reasoning_effort") is None and job.get("fallback_providers") is None:
++        # Only the stored job instruction/name may choose a tier, never fetched script output.
++        selected = choose(_cfg, str(job.get("name") or "") + "\n" + str(job.get("prompt") or ""), worker=True)
++    if selected:
++        setup.model, setup.runtime, setup.reasoning_config, setup.fallback_model, setup.fallback_notice = resolve(_cfg, selected)
++        setup.work_model_tier = selected["work_tier"]
++    else:
++        setup.runtime, setup.model = _resolve_job_runtime(job, job_id, jc)
++        setup.fallback_notice = setup.runtime.pop("_fallback_notice", None)
++        setup.reasoning_config = _resolve_job_reasoning_config(job, _cfg if isinstance(_cfg, dict) else {}, str(setup.model))
++        setup.fallback_model = _job_fallback_chain(job, _cfg)
+     setup.credential_pool = _load_credential_pool(setup.runtime, job_id)
+     # MCP servers must be registered before AIAgent is constructed.
+     _init_cron_mcp_tools(job_id)
+@@ -2528,7 +2533,7 @@ def _resolve_cron_agent_setup(job: dict, job_id: str, job_name: str, jc) -> _Cro
+ def _construct_cron_agent(AIAgent, job: dict, _cfg: dict, setup: _CronAgentSetup, *, workdir, session_id, session_db):
+     runtime = setup.runtime
+     pr = _cfg.get("provider_routing") or {}
+-    return AIAgent(
++    agent = AIAgent(
+         model=setup.model,
+         api_key=runtime.get("api_key"),
+         base_url=runtime.get("base_url"),
+@@ -2560,6 +2565,10 @@ def _construct_cron_agent(AIAgent, job: dict, _cfg: dict, setup: _CronAgentSetup
+         session_id=session_id,
+         session_db=session_db,
+     )
++    if getattr(setup, "work_model_tier", None):
++        from agent.work_model_tiers import bind
++        bind(agent, _cfg, setup.work_model_tier)
++    return agent
+ 
+ 
+ class _FireAudit:
+diff --git a/gateway/run_turn_runner.py b/gateway/run_turn_runner.py
+index 9f9dea488e678801070aa373ed8e280027c89f40..d5aee5fa8208d94a4e4b00997cd5e753f466700a 100644
+--- a/gateway/run_turn_runner.py
++++ b/gateway/run_turn_runner.py
+@@ -1061,6 +1061,9 @@ class TurnRunner:
+             cached = cache.get(ctx.session_key)
+             if not (cached and cached[1] == sig):
+                 return out
++            if getattr(cached[0], "_work_tier_promoted", False) is True:
++                out.evicted = self._pop_cached_agent_for_eviction()
++                return out
+             # cached[2] = message_count at cache time (stale when a second process appended rows);
+             # cached[3] = the session_id the snapshot was taken for.
+             cached_mc = cached[2] if len(cached) > 2 else None
+@@ -1130,7 +1133,8 @@ class TurnRunner:
+             session_db=getattr(runner._session_db, "_db", runner._session_db),
+             # Reload from disk — do not reuse the startup snapshot.
+             # See #60955.
+-            fallback_model=self._runner._refresh_fallback_model(),
++            fallback_model=(turn_route["work_fallbacks"] if "work_fallbacks" in turn_route else
++                            self._runner._refresh_fallback_model()),
+             skip_context_files=skip_context_files,
+             # Keep the persona even with minimal context: soul identity is one small file.
+             load_soul_identity=True,
+@@ -1149,6 +1153,8 @@ class TurnRunner:
+             user_id_alt=getattr(ctx.source, "user_id_alt", None),
+             skip_context_files=skip_context_files,
+         )
++        if "work_tier" in turn_route:
++            sig = str(sig) + "|" + turn_route["work_tier"] + "|" + str(reasoning_config)
+         cache_lock = getattr(runner, "_agent_cache_lock", None)
+         cache = getattr(runner, "_agent_cache", None)
+         peek_sid, dead = self._cached_sid_is_dead(cache_lock, cache)
+@@ -1159,7 +1165,8 @@ class TurnRunner:
+         # (disk I/O under the lock stalls the idle-sweep watcher and Discord heartbeats). A chain
+         # configured after caching must reach the next turn; per-session serialization keeps it safe.
+         if found.reused and agent is not None:
+-            self._runner._apply_fallback_chain_to_agent(agent, runner._refresh_fallback_model())
++            fallbacks = turn_route["work_fallbacks"] if "work_fallbacks" in turn_route else runner._refresh_fallback_model()
++            self._runner._apply_fallback_chain_to_agent(agent, fallbacks)
+         if found.evicted is not None:
+             self._release_evicted_agent(found.evicted)
+         if agent is None:
+@@ -1929,9 +1936,18 @@ class TurnRunner:
+         combined_ephemeral = self._combined_ephemeral_prompt()
+         max_iterations = _current_max_iterations()
+         try:
+-            model, runtime_kwargs = runner._resolve_session_agent_runtime(
+-                source=ctx.source, session_key=ctx.session_key, user_config=ctx.user_config,
+-            )
++            from agent.work_model_tiers import gateway_choice, resolve as resolve_work_tier
++            selected_work_route = gateway_choice(runner, ctx)
++            if selected_work_route is None:
++                model, runtime_kwargs = runner._resolve_session_agent_runtime(
++                    source=ctx.source, session_key=ctx.session_key, user_config=ctx.user_config,
++                )
++            else:
++                from gateway.run import _runtime_agent_kwargs
++                model, raw, work_reasoning, work_chain, notice = resolve_work_tier(ctx.user_config, selected_work_route)
++                runtime_kwargs = {**_runtime_agent_kwargs(raw), "request_overrides": raw.get("request_overrides") or {},
++                                  "capabilities": raw.get("capabilities") or {}}
++                runner._pre_agent_fallback_notice = notice
+             # Stashed by _resolve_session_agent_runtime when the primary's credentials failed and a
+             # fallback was resolved before any agent exists (#74349); one-shot per turn.
+             pending_fallback_notice = getattr(runner, "_pre_agent_fallback_notice", None)
+@@ -1955,14 +1971,21 @@ class TurnRunner:
+                 "messages": [], "api_calls": 0, "tools": [],
+             }
+         pr = runner._provider_routing
+-        reasoning_config = runner._resolve_session_reasoning_config(source=ctx.source, session_key=ctx.session_key, model=model)
++        reasoning_config = (work_reasoning if selected_work_route is not None else
++                            runner._resolve_session_reasoning_config(source=ctx.source, session_key=ctx.session_key, model=model))
+         runner._reasoning_config = reasoning_config
+         runner._service_tier = runner._resolve_session_service_tier(source=ctx.source, session_key=ctx.session_key)
+         stream_consumer, stream_delta_cb, interim_cb, want_interim = self._setup_stream_consumer(platform_key)
+         turn_route = runner._resolve_turn_agent_config(ctx.message, model, runtime_kwargs)
++        if selected_work_route is not None:
++            turn_route["work_tier"] = selected_work_route["work_tier"]
++            turn_route["work_fallbacks"] = work_chain
+         agent, reused_cached_agent = self._resolve_turn_agent(
+             turn_route, platform_key, combined_ephemeral, max_iterations, reasoning_config, pr,
+         )
++        if selected_work_route is not None:
++            from agent.work_model_tiers import bind
++            bind(agent, ctx.user_config, selected_work_route["work_tier"])
+         if pending_fallback_notice:
+             # Reuse the in-agent one-shot notice so the pre-agent provider switch is user-visible too.
+             agent._pending_fallback_notice = pending_fallback_notice
+diff --git a/hermes_cli/cli_agent_setup_mixin.py b/hermes_cli/cli_agent_setup_mixin.py
+index c365e68f17ef672e6ed24b9e9d2a5fca79023d6e..730d4cab9b84acc0007c3c4a84cc92a16d1d5f36 100644
+--- a/hermes_cli/cli_agent_setup_mixin.py
++++ b/hermes_cli/cli_agent_setup_mixin.py
+@@ -47,7 +47,9 @@ def _route_signature(model, runtime: dict) -> tuple:
+     """Hashable identity of (model, routing) used to detect when the agent must be rebuilt."""
+     return (
+         model, runtime.get("provider"), runtime.get("requested_provider"), runtime.get("base_url"),
+-        runtime.get("api_mode"), runtime.get("command"), tuple(runtime.get("args") or ()))
++        runtime.get("api_mode"), runtime.get("command"), tuple(runtime.get("args") or ())) + (
++        (runtime["_work_model_tier"], str(runtime.get("_work_effort")), str(runtime.get("_work_fallbacks")))
++        if "_work_model_tier" in runtime else ())
+ 
+ 
+ def _cooldown_cause(entry) -> str:
+@@ -521,14 +523,25 @@ class CLIAgentSetupMixin:
+         _cprint(f"  {t('cli.startup.provider_setup_incomplete')}")
+         return False
+ 
+-    def _resolve_turn_agent_config(self, user_message: str) -> dict:
++    def _resolve_turn_agent_config(self, user_message: str, *, allow_work_tiers=False) -> dict:
+         """Effective model/runtime config for one turn — always the session's primary
+         provider. With a static `/fast` tier (fast / ultrafast) attach request_overrides;
+         auto/cold tiers are applied per request by agent.fast_mode instead."""
+         from agent.fast_mode import STATIC_TIERS
+         from hermes_cli.models import resolve_fast_mode_overrides
+         runtime = _current_runtime(self)
+-        route = {"model": self.model, "runtime": runtime, "signature": _route_signature(self.model, runtime)}
++        model = self.model
++        work_cfg = None
++        if allow_work_tiers and not getattr(self, "_explicit_model_override", False):
++            from hermes_cli.config import load_config_readonly
++            from agent.work_model_tiers import cli_choice, resolve
++            work_cfg = load_config_readonly()
++            work = cli_choice(work_cfg, self, user_message)
++            if work:
++                model, runtime, effort, chain, _ = resolve(work_cfg, work)
++                runtime = {**runtime, "_work_model_tier":work["work_tier"], "_work_effort":effort,
++                           "_work_fallbacks":chain, "_work_config":work_cfg}
++        route = {"model": model, "runtime": runtime, "signature": _route_signature(model, runtime)}
+         overrides = None
+         tier = getattr(self, "service_tier", None)
+         if tier in STATIC_TIERS:
+@@ -676,7 +689,7 @@ class CLIAgentSetupMixin:
+                 tool_progress_mode=getattr(self, "tool_progress_mode", "all"),
+                 ephemeral_system_prompt=self.system_prompt if self.system_prompt else None,
+                 prefill_messages=self.prefill_messages or None,
+-                reasoning_config=self.reasoning_config, service_tier=self.service_tier,
++                reasoning_config=runtime.get("_work_effort", self.reasoning_config), service_tier=self.service_tier,
+                 request_overrides=request_overrides, providers_allowed=self._providers_only,
+                 providers_ignored=self._providers_ignore, providers_order=self._providers_order,
+                 provider_sort=self._provider_sort,
+@@ -686,7 +699,7 @@ class CLIAgentSetupMixin:
+                 session_id=self.session_id, platform="cli", session_db=self._session_db,
+                 clarify_callback=clarify_callback, connection_callback=connection_callback,
+                 reasoning_callback=self._current_reasoning_callback(),
+-                fallback_model=self._fallback_model, thinking_callback=self._on_thinking,
++                fallback_model=runtime.get("_work_fallbacks", self._fallback_model), thinking_callback=self._on_thinking,
+                 checkpoints_enabled=self.checkpoints_enabled,
+                 checkpoint_max_snapshots=self.checkpoint_max_snapshots,
+                 checkpoint_max_total_size_mb=self.checkpoint_max_total_size_mb,
+@@ -724,6 +737,9 @@ class CLIAgentSetupMixin:
+                 seed_credits_at_session_start(self.agent)
+             except Exception:
+                 pass
++            if "_work_model_tier" in runtime:
++                from agent.work_model_tiers import bind
++                bind(self.agent, runtime["_work_config"], runtime["_work_model_tier"])
+             self._active_agent_route_signature = _route_signature(effective_model, runtime)
+ 
+             # Force-create DB row on /title intent, then apply title.
+diff --git a/hermes_cli/cli_chat_turn_mixin.py b/hermes_cli/cli_chat_turn_mixin.py
+index 9509450e8c7221a433a72780f04fec63bc00e188..52b088df535b23d702b976ca6325991673888eb6 100644
+--- a/hermes_cli/cli_chat_turn_mixin.py
++++ b/hermes_cli/cli_chat_turn_mixin.py
+@@ -68,8 +68,11 @@ class CLIChatTurnMixin:
+         if not self._ensure_runtime_credentials():
+             return None
+ 
+-        turn_route = self._resolve_turn_agent_config(message)
+-        if turn_route["signature"] != self._active_agent_route_signature:
++        from agent.work_model_tiers import configured as work_tiers_configured
++        # Only a profile with agent.work_model_tiers routes by tier; otherwise the call is unchanged.
++        turn_route = self._resolve_turn_agent_config(
++            message, **({"allow_work_tiers": True} if work_tiers_configured() else {}))
++        if turn_route["signature"] != self._active_agent_route_signature or getattr(self.agent, "_work_tier_promoted", False) is True:
+             _retire_agent(self)
+         if self.agent is None:
+             _cprint(f"{_DIM}{t('cli.chat.initializing_agent')}{_RST}")
+@@ -79,7 +82,8 @@ class CLIChatTurnMixin:
+         agent = self.agent
+         if agent is None:
+             return None
+-        self._sync_fallback_chain_with_config(agent)  # chain added after this chat opened reaches this turn
++        if "_work_fallbacks" not in (turn_route.get("runtime") or {}):
++            self._sync_fallback_chain_with_config(agent)  # chain added after this chat opened reaches this turn
+         message = self._chat_route_images(message, images)
+ 
+         if isinstance(message, str) and not isinstance(message, TimelineNotification):
+diff --git a/hermes_cli/cli_single_query.py b/hermes_cli/cli_single_query.py
+index 4a18e80ee8cdf395d8085b49bcc7ddf27eb21451..b8314a7d6745abc5dcd44371cda8224f100e9028 100644
+--- a/hermes_cli/cli_single_query.py
++++ b/hermes_cli/cli_single_query.py
+@@ -539,7 +539,9 @@ def _run_single_query_mode(cli, query, image, quiet, oneshot, stream_json: bool
+                 effective_query: Any = _route_single_query_images(
+                     cli, query, query, single_query_images, single_query_image_urls
+                 )
+-                turn_route = cli._resolve_turn_agent_config(effective_query)
++                from agent.work_model_tiers import configured as work_tiers_configured
++                turn_route = cli._resolve_turn_agent_config(
++                    effective_query, **({"allow_work_tiers": True} if work_tiers_configured() else {}))
+                 if turn_route["signature"] != cli._active_agent_route_signature:
+                     cli.agent = None
+                 if cli._init_agent(
+diff --git a/hermes_cli/oneshot.py b/hermes_cli/oneshot.py
+index b9eb2d48708af862ce85684350be874fa8d699e2..25639a143b828c4ea5019a058800facf85d844bb 100644
+--- a/hermes_cli/oneshot.py
++++ b/hermes_cli/oneshot.py
+@@ -516,6 +516,12 @@ def _run_agent(
+ 
+     cfg = load_config()
+     choice = _resolve_model_and_provider(cfg, model, provider)
++    from agent.work_model_tiers import choose as choose_work_tier
++    work_tier = None if model or provider or reasoning is not None or resume or os.getenv("HERMES_INFERENCE_MODEL") else choose_work_tier(cfg, prompt)
++    if work_tier:
++        cfg = {**cfg, "fallback_providers": work_tier["fallback_providers"]}
++        choice = dataclasses.replace(choice, model=work_tier["model"], provider=work_tier["provider"],
++                                     base_url=work_tier.get("base_url"), api_mode=work_tier.get("api_mode"))
+     # Resume resolves BEFORE the runtime provider: the session's stored model/route must
+     # replace the ambient config (see _apply_stored_session_runtime) and the ended row must
+     # be reopened before the agent can stamp a new lifecycle boundary.
+@@ -541,6 +547,8 @@ def _run_agent(
+     from hermes_constants import parse_reasoning_effort, resolve_reasoning_config
+ 
+     reasoning_config = resolve_reasoning_config(cfg, choice.model)
++    if work_tier:
++        reasoning_config = parse_reasoning_effort((fallback_entry or work_tier)["reasoning_effort"])
+     if reasoning is not None and str(reasoning).strip():
+         parsed_reasoning = parse_reasoning_effort(reasoning)
+         if parsed_reasoning is None:
+@@ -592,6 +600,9 @@ def _run_agent(
+             # commands via HERMES_YOLO_MODE=1, skill secret capture degrades gracefully.
+             clarify_callback=_oneshot_clarify_callback,
+         )
++        if work_tier:
++            from agent.work_model_tiers import bind
++            bind(agent, cfg, work_tier["work_tier"])
+         # Belt-and-braces: no streaming display callbacks may bypass our stdout capture.
+         agent.suppress_status_output = True
+         agent.stream_delta_callback = None
+diff --git a/tests/agent/test_work_model_tiers.py b/tests/agent/test_work_model_tiers.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..a9aadf178c86154a985052d7854f8ccbe12e7092
+--- /dev/null
++++ b/tests/agent/test_work_model_tiers.py
+@@ -0,0 +1,92 @@
++"""agent.work_model_tiers: opt-in routing of turns to configured lookup / workflow / recovery routes.
++
++Only locally configured routes are possible; user text picks a category, never a model. Made-up config only.
++"""
++from __future__ import annotations
++
++from types import SimpleNamespace
++
++import pytest
++
++from agent import work_model_tiers as W
++
++TIERS = {
++    "lookup": {"model": "small-model", "provider": "prov", "reasoning_effort": "low"},
++    "workflow": {"model": "mid-model", "provider": "prov", "reasoning_effort": "medium",
++                 "fallback_providers": [{"provider": "other", "model": "backup"}]},
++    "recovery": {"model": "big-model", "provider": "prov", "reasoning_effort": "high"},
++}
++CFG = {"model": {"default": "main-model", "provider": "prov"}, "agent": {"work_model_tiers": TIERS}}
++
++
++@pytest.mark.parametrize("text,worker,expected", [
++    ("what is a haiku?", False, None),
++    ("what is a haiku?", True, "lookup"),
++    ("check my calendar for friday", False, "lookup"),
++    ("find the invoice, then email it to the vendor and update the sheet", False, "workflow"),
++    ("run the end-to-end migration workflow", False, "workflow"),
++    ("debug the crash loop in the gateway", False, "recovery"),
++    ("```\ndebug the crash loop\n```", True, "lookup"),       # fenced text never picks a route
++    (None, False, None),
++])
++def test_classify(text, worker, expected):
++    assert W.classify(text, worker=worker) == expected
++
++
++def test_no_tiers_configured_means_no_routing():
++    assert W.choose({"model": CFG["model"]}, "debug the crash loop") is None
++
++
++def test_choose_returns_only_configured_fields():
++    row = W.choose(CFG, "debug the crash loop in the gateway")
++    assert row == {"work_tier": "recovery", "model": "big-model", "provider": "prov", "reasoning_effort": "high"}
++
++
++def test_plain_chat_stays_on_the_main_route():
++    row = W.choose(CFG, "good morning")
++    assert row["work_tier"] == "main" and row["model"] == "main-model"
++
++
++def test_incomplete_tier_is_ignored():
++    cfg = {**CFG, "agent": {"work_model_tiers": {"lookup": {"model": "x"}}}}
++    assert W.choose(cfg, "check my calendar") is None
++
++
++def _state(messages, offset=0, calls=1):
++    return SimpleNamespace(messages=messages, current_turn_user_idx=offset, api_call_count=calls)
++
++
++def _agent(tier="lookup"):
++    a = SimpleNamespace(provider="prov", model="small-model", api_key="k", base_url="u", api_mode="m",
++                        _fallback_activated=False, reasoning_config=None)
++    W.bind(a, CFG, tier)
++    a.switch_model = lambda model, *args, **kw: setattr(a, "model", model)
++    return a
++
++
++def test_completed_tool_receipts_promote_to_workflow(monkeypatch):
++    import gateway.run_config_loaders as loaders
++    monkeypatch.setattr(loaders.GatewayConfigLoadersMixin, "_apply_fallback_chain_to_agent",
++                        staticmethod(lambda agent, chain: setattr(agent, "chain", chain)))
++    msgs = [{"role": "user", "content": "go"},
++            {"role": "assistant", "tool_calls": [{"id": "a", "function": {"name": "read"}},
++                                                 {"id": "b", "function": {"name": "search"}}]},
++            {"role": "tool", "tool_call_id": "a"}, {"role": "tool", "tool_call_id": "b"}]
++    agent = _agent()
++    W.advance_after_tools(agent, _state(msgs))
++    assert agent._work_model_tier == "workflow" and agent.model == "mid-model"
++    assert agent._work_tier_promoted is True and agent.chain == TIERS["workflow"]["fallback_providers"]
++
++
++def test_never_promotes_down_or_across_providers():
++    msgs = [{"role": "user"}, {"role": "assistant", "tool_calls": [{"id": "a", "function": {"name": "read"}}]},
++            {"role": "tool", "tool_call_id": "a"}]
++    agent = _agent("workflow")
++    W.advance_after_tools(agent, _state(msgs))
++    assert agent._work_model_tier == "workflow" and agent.model == "small-model"
++    agent = _agent("lookup")
++    agent.provider = "elsewhere"
++    W.advance_after_tools(agent, _state(msgs + [{"role": "assistant", "tool_calls": [
++        {"id": "b", "function": {"name": "x"}}, {"id": "c", "function": {"name": "y"}}]},
++        {"role": "tool", "tool_call_id": "b"}, {"role": "tool", "tool_call_id": "c"}]))
++    assert agent._work_model_tier == "lookup"
+diff --git a/tools/delegate_tool.py b/tools/delegate_tool.py
+index c669c3b6a9418bf4abf8635c80f3ef975adc28ae..fc9da0bae65239f6362fde29cb2692dc4facc9d6 100644
+--- a/tools/delegate_tool.py
++++ b/tools/delegate_tool.py
+@@ -400,6 +400,7 @@ def _build_children(
+     task_list: List[Dict[str, Any]], task_schemas: List[Optional[Dict[str, Any]]], creds: Dict[str, Any], *,
+     top_role: str, max_iterations: int, parent_agent, routing_cfg: Dict[str, Any],
+     live_deleg_id: Optional[str], live_writers: list, task_images: Optional[List[Optional[List[str]]]] = None,
++    apply_work_tiers: bool = False,
+ ) -> tuple[List[tuple], Optional[str]]:
+     """Build every child on the main thread (construction is not thread-safe);
+     ``(children, None)`` or ``([], error)`` on an explicit-pin preflight failure."""
+@@ -413,8 +414,26 @@ def _build_children(
+         "override_acp_args": creds.get("args"),
+         "routing_cfg": routing_cfg,
+     }
++    from agent.work_model_tiers import parent_config
+     children = []
++    branch_routes = []
++    for item in task_list:
++        try:
++            selected, resolved = parent_config(parent_agent, item.get("goal"), resolve_route=True) if apply_work_tiers else (None, None)
++        except Exception as exc:
++            return [], type(exc).__name__ + ": could not resolve the configured work route"
++        if selected is None:
++            branch_routes.append((creds["model"], overrides))
++            continue
++        model, raw, reasoning, chain, _ = resolved
++        branch = dict(overrides, override_provider=raw.get("provider"), override_base_url=raw.get("base_url"),
++                      override_api_key=raw.get("api_key"), override_api_mode=raw.get("api_mode"),
++                      override_request_overrides=raw.get("request_overrides"), override_acp_command=raw.get("command"),
++                      override_acp_args=raw.get("args"), routing_cfg={**selected, "reasoning_effort":reasoning["effort"],
++                                                                     "fallback_providers":chain})
++        branch_routes.append((model, branch))
+     for i, t in enumerate(task_list):
++        child_model, child_overrides = branch_routes[i]
+         _task_schema = task_schemas[i] if i < len(task_schemas) else None
+         _child_context = t.get("context")
+         if _task_schema is not None:
+@@ -423,11 +442,14 @@ def _build_children(
+             child = _build_child_preserving_parent_tools(
+                 task_index=i, goal=t["goal"], context=_child_context,
+                 toolsets=None,  # always inherit the parent's toolsets
+-                model=creds["model"], max_iterations=max_iterations, task_count=len(task_list),
+-                parent_agent=parent_agent, role=_normalize_role(t.get("role") or top_role), **overrides,
++                model=child_model, max_iterations=max_iterations, task_count=len(task_list),
++                parent_agent=parent_agent, role=_normalize_role(t.get("role") or top_role), **child_overrides,
+             )
+         except ValueError as exc:
+             return [], str(exc)
++        if child_overrides["routing_cfg"].get("work_tier"):
++            from agent.work_model_tiers import bind, parent_config
++            bind(child, parent_config(parent_agent), child_overrides["routing_cfg"]["work_tier"])
+         if _task_schema is not None:
+             with _quiet("Could not attach output schema to child %d", i):
+                 child._delegate_output_schema = _task_schema
+@@ -569,6 +591,7 @@ def delegate_task(
+     children, err = _build_children(
+         task_list, task_schemas, creds, top_role=top_role, max_iterations=default_max_iter, parent_agent=parent_agent,
+         routing_cfg=routing_cfg, live_deleg_id=live_deleg_id, live_writers=live_writers, task_images=task_images,
++        apply_work_tiers=credentials_cfg is None,
+     )
+     if err:
+         return tool_error(err)
+diff --git a/tools/delegate_tool_config.py b/tools/delegate_tool_config.py
+index 7a5a51b555ead70f1420600ced5a0c7341c60a26..db88c822702121c7927f326e1e2d7c51d7585511 100644
+--- a/tools/delegate_tool_config.py
++++ b/tools/delegate_tool_config.py
+@@ -568,7 +568,8 @@ def _resolve_child_runtime(
+     # YAML ``false`` must disable thinking, not coerce to "" and inherit.
+     child_reasoning = getattr(parent_agent, "reasoning_config", None)
+     try:
+-        delegation_effort = delegation_cfg.get("reasoning_effort")
++        effort_owner = routing_cfg if (routing_cfg or {}).get("work_tier") else delegation_cfg
++        delegation_effort = effort_owner.get("reasoning_effort")
+         if delegation_effort or delegation_effort is False:
+             from hermes_constants import parse_reasoning_effort
+             parsed = parse_reasoning_effort(delegation_effort)

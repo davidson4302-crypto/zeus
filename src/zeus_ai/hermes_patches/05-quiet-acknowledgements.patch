@@ -1,0 +1,107 @@
+diff --git a/gateway/response_filters.py b/gateway/response_filters.py
+index 948924e8324186949ecfd7276324f3530fe7218f..a26d5d1ef4c97ab03fa8727e113c05e1b95a8056 100644
+--- a/gateway/response_filters.py
++++ b/gateway/response_filters.py
+@@ -128,6 +128,29 @@ def silence_allowed(display_kind: Any, reply_expected: Optional[bool] = None) ->
+     return is_machinery_display_kind(display_kind) or reply_expected is False
+ 
+ 
++# A bare acknowledgement closes the exchange, so an agent's silence marker on it is correct, not an
++# error to report.
++_ACK_PHRASES = frozenset({
++    "got it", "gotcha", "ok", "okay", "k", "kk", "ok thanks", "okay thanks", "ok thank you",
++    "thanks", "thank you", "thx", "ty", "tysm", "thanks!", "cool", "cool thanks", "nice", "perfect",
++    "great", "great thanks", "sounds good", "sounds great", "all good", "will do", "noted", "roger",
++    "copy", "copy that", "understood", "makes sense", "awesome", "sweet", "got it thanks",
++    "got it thank you", "perfect thanks", "ok cool", "ok great", "ok perfect", "word", "bet",
++    "👍", "👌", "🙏", "✅", "🙌", "👍🏻", "👍🏼", "👍🏽", "👍🏾", "👍🏿", "❤️", "😊", "🔥",
++})
++
++
++def is_pure_acknowledgement(text: Any) -> bool:
++    """True when ``text`` is only a short closing acknowledgement ("Got it", "ok thanks", "👍")."""
++    if not isinstance(text, str):
++        return False
++    t = " ".join(text.strip().lower().split())
++    if not t or len(t) > 40:
++        return False
++    t = t.strip(" .!,~")
++    return t in _ACK_PHRASES
++
++
+ def reply_expected_metadata(reply_expected: Optional[bool]) -> dict:
+     """The persisted user row's ``reply_expected`` key, only when the adapter knew; crash recovery
+     reads it back to judge a silence marker as the live turn did."""
+diff --git a/gateway/run_turn.py b/gateway/run_turn.py
+index 829886d3e08724684d406599cffc60fa68397fe8..bdd290eca0a7ccdb337613901951acdafdd6c62e 100644
+--- a/gateway/run_turn.py
++++ b/gateway/run_turn.py
+@@ -27,6 +27,7 @@ from gateway.platforms.base import BasePlatformAdapter, ProcessingOutcome
+ from gateway.platforms.event import MessageEvent
+ from gateway.response_filters import (
+     display_kind_for_event, is_machinery_display_kind, reply_expected_metadata, silence_allowed,
++    is_pure_acknowledgement,
+ )
+ from gateway.warning_notifications import diagnostic_metadata, diagnostic_turn_muted, diagnostic_wake_muted
+ from gateway.session import (
+@@ -2160,6 +2161,11 @@ class GatewayTurnMixin:
+             (getattr(event, "reply_to_text", None) or "")[:80].replace("\n", " "),
+         )
+ 
++        # A bare "Got it" / "ok" / "thanks" needs no answer, so the agent may stay quiet instead of the
++        # gateway sending the unexpected-silence warning.
++        if (not event.internal and event.reply_expected is not False and not event.media_urls
++                and is_pure_acknowledgement(event.text)):
++            event.reply_expected = False
+         resolved = await self._hmwa_resolve_session(event, source)
+         if resolved is None:
+             return
+diff --git a/locales/en.yaml b/locales/en.yaml
+index dbb8972a633c6b8edbffe1f1d8e0f6b261631a4f..4365df48d564b9398753bd195e068a42451ed98b 100644
+--- a/locales/en.yaml
++++ b/locales/en.yaml
+@@ -682,7 +682,7 @@ gateway:
+     stopped_before_finishing: "⚠️ I had to stop before finishing{reason}. Use /retry to try again, or /compress if this conversation has grown very long."
+     no_response: "⚠️ Processing completed but no response was generated. This may be a transient error — try sending your message again."
+     previous_turn_cleanup: "⚠️ Your message wasn't processed (the previous turn was still being cleaned up). Please send it again."
+-    unexpected_silence: "⚠️ The model returned only a silence marker for a message that needed a reply. Try again or rephrase."
++    unexpected_silence: "⚠️ Sorry, my reply got lost there. Send that again and I'll answer."
+     empty_response_model_label: "The model"
+     hint_auth: " Your sign-in to the AI model service has expired or the API key is wrong. Use /login here, or run `{relogin}` on the host."
+     hint_quota: " Your AI model service balance or quota is used up. Top it up on the service's website, or use /model to switch models."
+diff --git a/tests/gateway/test_ack_silence.py b/tests/gateway/test_ack_silence.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..5229680aefadda2e0cb3262a7ff3904a1e5e350f
+--- /dev/null
++++ b/tests/gateway/test_ack_silence.py
+@@ -0,0 +1,16 @@
++"""A bare acknowledgement may end quietly."""
++import pytest
++from gateway.response_filters import is_pure_acknowledgement, silence_allowed
++
++@pytest.mark.parametrize("text", ["Got it", "got it.", "OK", "ok thanks!", "Thanks", "👍", "sounds good", "  Perfect  "])
++def test_acks(text):
++    assert is_pure_acknowledgement(text)
++
++@pytest.mark.parametrize("text", ["You still alive?", "1 yes  their name is Alex. ", "got it, now send it to Jordan",
++                                  "ok?", "", None, "thanks for the draft, change the second line"])
++def test_not_acks(text):
++    assert not is_pure_acknowledgement(text)
++
++def test_ack_turn_allows_silence():
++    assert silence_allowed(None, False)
++    assert not silence_allowed(None, None)
+diff --git a/tests/gateway/test_active_turn_recovery.py b/tests/gateway/test_active_turn_recovery.py
+index a1b2ba762f5b5d464df213fc047b8f5851ae76a3..44f72b7e08a4f6469e511108bf13cac70b5ea80d 100644
+--- a/tests/gateway/test_active_turn_recovery.py
++++ b/tests/gateway/test_active_turn_recovery.py
+@@ -521,8 +521,7 @@ _WAKE = {"display_kind": "internal_notification"}
+     ("[SILENT]", _WAKE, []),
+     ("NO_REPLY", _WAKE, []),
+     ("disk is 91% full", {**_WAKE, "display_metadata": {"notification_category": "diagnostic"}}, []),
+-    ("NO_REPLY", {}, ["⚠️ The model returned only a silence marker for a message that needed a reply. "
+-                      "Try again or rephrase."]),
++    ("NO_REPLY", {}, ["⚠️ Sorry, my reply got lost there. Send that again and I'll answer."]),
+     ("NO_REPLY", {"display_metadata": {"reply_expected": False}}, []),
+ ])
+ async def test_unclean_restart_never_redelivers_a_reply_live_delivery_suppressed(tmp_path, reply, prompt, owed):

@@ -25,7 +25,8 @@ ALLOWED_EMAIL_DOMAINS = re.compile(
 CHECKS = {
     'home-path': re.compile(r'/Users/(?!<|\$|\{)[A-Za-z0-9._-]+|/home/(?!<|\$|\{)[a-z][a-z0-9._-]+'),
     'phone': re.compile(r'(?<![\w.:/-])\+?1?[ (.-]?\d{3}[) .-]?\d{3}[ .-]\d{4}(?![\w])|\+1\d{10}\b'),
-    'email': re.compile(r"[A-Za-z0-9._%+'-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+"),
+    # The local part starts with a letter or digit, so a diff's "+@decorator" line is not an address.
+    'email': re.compile(r"[A-Za-z0-9][A-Za-z0-9._%+'-]*@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+"),
 }
 FAKE_PHONE = re.compile(r'555[ .-]?01\d\d|\+1555')
 ALLOW_MARK = 'privacy-gate: allow'   # a line deliberately naming the copyright holder

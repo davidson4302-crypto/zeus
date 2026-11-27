@@ -1,0 +1,228 @@
+diff --git a/gateway/platforms/base.py b/gateway/platforms/base.py
+index 604dea2498cc58a9e576127ef23dafa423e50d00..0074f7df9bcef62c7a095c77e2bebb2f3ca1a73b 100644
+--- a/gateway/platforms/base.py
++++ b/gateway/platforms/base.py
+@@ -4439,6 +4439,14 @@ class BasePlatformAdapter(ABC):
+             _ledger_id = getattr(event, "ledger_message_id", None)
+             if _ledger_id is None:
+                 _ledger_id = getattr(event, "message_id", "")
++            if strict and not str(_ledger_id or ""):
++                # A strict id ignores the text, so an event with no message id (a helper or background
++                # completion, a queued lane without an inbound id) would hash to sha(session||): one id
++                # shared by every such reply in the chat, where the first owns it and every later one is
++                # refused as "payload changed". Use the producer's own stable id when the notifier gave
++                # one, else a fresh id pinned to this event.
++                _ledger_id = getattr(event, "_delivery_producer_ref", None) or "anon:" + uuid.uuid4().hex
++                setattr(event, "_delivery_producer_ref", _ledger_id)
+             obligation_id = compute_obligation_id(
+                 session_key, str(_ledger_id or ""), "" if strict else text_content)
+             frozen = dict(_thread_metadata_for_event(event) or {})
+diff --git a/gateway/run_notifications.py b/gateway/run_notifications.py
+index 1c5c747eb2b274439fc696c0ea9a5b9bcfc15e5b..8657b0c51db1c339e5855e2b4c3696e1bea68606 100644
+--- a/gateway/run_notifications.py
++++ b/gateway/run_notifications.py
+@@ -1387,6 +1387,12 @@ class GatewayNotificationsMixin:
+                 producer = self._completion_delivery_identity(evt)
+                 if producer is not None:
+                     synth_event.ledger_message_id = "process:" + str(producer)
++            else:
++                # Every completion gets its own stable delivery identity on strict transports. Only the
++                # obligation ledger reads it; reply anchors are untouched.
++                producer = self._completion_delivery_identity(evt)
++                if producer is not None:
++                    synth_event._delivery_producer_ref = "process:" + str(producer)
+             logger.info(
+                 "Watch pattern notification — injecting for %s chat=%s thread=%s",
+                 platform_name, source.chat_id, source.thread_id,
+diff --git a/tests/gateway/test_completion_producer_ref.py b/tests/gateway/test_completion_producer_ref.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..659118fa9b3f91fd73e926d9466c4d71afcbb343
+--- /dev/null
++++ b/tests/gateway/test_completion_producer_ref.py
+@@ -0,0 +1,54 @@
++"""The completion notifier stamps every synthetic completion with its producer's stable delivery id.
++Made-up data only."""
++import asyncio
++from collections import OrderedDict
++from types import SimpleNamespace
++from unittest.mock import AsyncMock
++
++import pytest
++
++from gateway.config import Platform
++from gateway.run import GatewayRunner
++
++
++class Admitting(AsyncMock):
++    async def _execute_mock_call(self, event, *args, **kwargs):
++        result = await super()._execute_mock_call(event, *args, **kwargs)
++        event._gateway_accepted = True
++        return result
++
++
++@pytest.fixture(autouse=True)
++def isolated(tmp_path, monkeypatch):
++    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
++    import tools.process_registry as pr
++    monkeypatch.setattr(pr, "CHECKPOINT_PATH", tmp_path / "processes.json")
++    monkeypatch.setattr(pr, "process_registry", pr.ProcessRegistry())
++
++
++def _runner(adapter):
++    runner = object.__new__(GatewayRunner)
++    runner._running = True
++    runner.adapters = {Platform.TELEGRAM: adapter}
++    runner.session_store = SimpleNamespace(_ensure_loaded=lambda: None, _entries={})
++    runner._session_source_cache = {}
++    runner._completion_delivery_lock = __import__("threading").Lock()
++    runner._completion_deliveries_inflight = set()
++    runner._completion_deliveries_delivered = OrderedDict()
++    runner._completion_delivery_retention = 2048
++    runner._background_tasks = set()
++    return runner
++
++
++@pytest.mark.parametrize("deleg", ["deleg_test_a", "deleg_test_b"])
++def test_async_delegation_completion_gets_producer_ref(deleg):
++    adapter = SimpleNamespace(handle_message=Admitting(), send=AsyncMock())
++    runner = _runner(adapter)
++    evt = {"type": "async_delegation", "delegation_id": deleg, "session_key": "agent:main:telegram:dm:12345",
++           "platform": "telegram", "chat_type": "dm", "chat_id": "12345", "status": "completed",
++           "summary": "made-up result"}
++    assert asyncio.run(runner._inject_watch_notification("made-up helper result", evt)) is True
++    event = adapter.handle_message.await_args.args[0]
++    assert event._delivery_producer_ref == "process:" + str(("async_delegation", deleg, ""))
++    assert event.ledger_message_id is None          # Slack room trigger / reply anchors unchanged
++    assert event.message_id is None and event.source.message_id is None
+diff --git a/tests/gateway/test_synthetic_final_identity.py b/tests/gateway/test_synthetic_final_identity.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..da86abe61e36fd7272ee80ae3daa69876352e287
+--- /dev/null
++++ b/tests/gateway/test_synthetic_final_identity.py
+@@ -0,0 +1,126 @@
++"""Two background-helper results in one strict (durable) iMessage chat must both be delivered.
++
++Made-up data only (.test handles, invented text). Uses the real BasePlatformAdapter ledger bracket
++(_record_delivery_obligation -> send_final_ledgered -> delivery_attempts.transmit) against the suite's
++isolated HERMES_HOME, with a fake adapter whose transport just records what would have been sent.
++
++A synthetic completion event has no message_id and no ledger_message_id, so without a producer id its
++strict obligation id is sha(session_key|""|""): the same for every helper result in that chat. The first
++one sent owns that id and every later one is refused as "payload changed".
++"""
++import asyncio
++import unittest
++from pathlib import Path
++
++from gateway.config import Platform, PlatformConfig  # noqa: E402
++from gateway.platforms.base import BasePlatformAdapter, SendResult  # noqa: E402
++from gateway.platforms.event import MessageEvent, MessageType  # noqa: E402
++from gateway.session import SessionSource  # noqa: E402
++from hermes_constants import get_hermes_home  # noqa: E402
++
++CHAT = "any;-;+15550100.test"
++SESSION = "agent:fakebot:shared:dm:bot-chat"
++
++
++class FakeStrict(BasePlatformAdapter):
++    def __init__(self):
++        super().__init__(PlatformConfig(enabled=True, extra={"durable_delivery": True}), Platform("photon"))
++        self._owner_profile = "fakebot"
++        self._project_id = "proj-test"
++        self.wire = []
++
++    async def connect(self, *, is_reconnect=False):
++        return True
++
++    async def disconnect(self):
++        return None
++
++    async def get_chat_info(self, chat_id):
++        return {}
++
++    async def send(self, chat_id, content, reply_to=None, metadata=None):
++        from gateway.delivery_attempts import route_for, transmit
++        route = route_for(self, chat_id, metadata=metadata, mode="imessage", reply_to=reply_to)
++
++        async def effect(attempt_id):
++            self.wire.append(content)
++            return {"messageId": f"prov-{len(self.wire)}"}
++        return await transmit(route, {"text": content}, "/send", effect)
++
++
++def source(message_id=None):
++    return SessionSource(platform=Platform("photon"), chat_id=CHAT, chat_type="dm", user_id="+15550100.test",
++                         profile="fakebot", message_id=message_id)
++
++
++def synth(text, **attrs):
++    event = MessageEvent(text=text, message_type=MessageType.TEXT, source=source(), internal=True)
++    for key, value in attrs.items():
++        setattr(event, key, value)
++    return event
++
++
++async def final(adapter, event, text):
++    from gateway.platforms.base import _thread_metadata_for_event
++    result, _ = await adapter.send_final_ledgered(event, SESSION, text, _thread_metadata_for_event(event) or {},
++                                                  reply_to=None)
++    return result
++
++
++class SyntheticFinalIdentity(unittest.TestCase):
++    def test_two_helper_results_both_reach_the_chat(self):
++        adapter = FakeStrict()
++        first = asyncio.run(final(adapter, synth("[ASYNC DELEGATION BATCH COMPLETE - deleg_aaa]",
++                                                 _delivery_producer_ref="process:async_delegation:deleg_aaa"),
++                                  "First made-up helper answer."))
++        second = asyncio.run(final(adapter, synth("[ASYNC DELEGATION BATCH COMPLETE - deleg_bbb]",
++                                                  _delivery_producer_ref="process:async_delegation:deleg_bbb"),
++                                   "Second made-up helper answer."))
++        self.assertTrue(first.success, first.error)
++        self.assertTrue(second.success, second.error)
++        self.assertEqual(adapter.wire, ["First made-up helper answer.", "Second made-up helper answer."])
++
++    def test_anonymous_synthetic_finals_never_share_an_identity(self):
++        # No producer id at all (legacy event / queued lane without an inbound id): still never collide.
++        adapter = FakeStrict()
++        a = asyncio.run(final(adapter, synth("[note one]"), "Made-up note one."))
++        b = asyncio.run(final(adapter, synth("[note two]"), "Made-up note two."))
++        self.assertTrue(a.success and b.success, (a.error, b.error))
++        self.assertEqual(len(adapter.wire), 2)
++
++    def test_same_producer_replay_is_not_resent(self):
++        # A replayed completion of the SAME producer keeps its stable identity: at most once on the phone.
++        adapter = FakeStrict()
++        ref = "process:async_delegation:deleg_ccc"
++        one = asyncio.run(final(adapter, synth("[x]", _delivery_producer_ref=ref), "Made-up replayed answer."))
++        two = asyncio.run(final(adapter, synth("[x]", _delivery_producer_ref=ref), "Made-up replayed answer."))
++        self.assertTrue(one.success and two.success)
++        self.assertEqual(adapter.wire, ["Made-up replayed answer."])
++
++    def test_real_inbound_reply_identity_unchanged(self):
++        # A normal reply to an inbound message keeps the old id (sha(session|message_id|"")), so live rows stay valid.
++        from gateway.delivery_ledger import compute_obligation_id
++        import sqlite3
++        adapter = FakeStrict()
++        event = MessageEvent(text="made-up ask", message_type=MessageType.TEXT, source=source("spc-msg-test-1"),
++                             message_id="spc-msg-test-1")
++        r = asyncio.run(final(adapter, event, "Made-up normal reply."))
++        self.assertTrue(r.success, r.error)
++        oid = compute_obligation_id(SESSION, "spc-msg-test-1", "")
++        rows = sqlite3.connect(Path(get_hermes_home()) / "state.db").execute(
++            "select obligation_id from delivery_obligations where obligation_id=?", (oid,)).fetchall()
++        self.assertEqual(len(rows), 1)
++
++    def test_scheduled_and_held_sends_never_collide(self):
++        # Cron results and 9am-held results go out as plain adapter sends (no obligation id): each gets its own id.
++        from gateway.delivery_attempts import tool_metadata
++        adapter = FakeStrict()
++        a = asyncio.run(adapter.send(CHAT, "Made-up scheduled result.", metadata={"hermes_profile": "fakebot"}))
++        b = asyncio.run(adapter.send(CHAT, "Made-up 9am held result.", metadata={"hermes_profile": "fakebot"}))
++        c = asyncio.run(adapter.send(CHAT, "Made-up tool send.", metadata=tool_metadata()))
++        self.assertTrue(a.success and b.success and c.success, (a.error, b.error, c.error))
++        self.assertEqual(len(adapter.wire), 3)
++
++
++if __name__ == "__main__":
++    unittest.main(verbosity=2)

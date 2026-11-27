@@ -1,0 +1,395 @@
+diff --git a/cron/delivery_queue.py b/cron/delivery_queue.py
+index b7aba54f9be98ddfe447dc57550aa0fa942acc9d..a1afd892a131114ea9a611c78a4e57fb6de62232 100644
+--- a/cron/delivery_queue.py
++++ b/cron/delivery_queue.py
+@@ -11,6 +11,7 @@ from __future__ import annotations
+ 
+ import json
+ import logging
++import math
+ import os
+ import sqlite3
+ import threading
+@@ -387,16 +388,172 @@ def recover_abandoned() -> int:
+     return changed
+ 
+ 
++# ---- deliver_after holds -------------------------------------------------------------------------
++# Off unless the profile sets ``cron.deliver_gate: true``. A held delivery is parked whole (job with
++# its destination, content with its MEDIA tags) in ``delivery_holds`` BEFORE anything is claimed or
++# sent, so there is no outcome to guess. When its time comes it enters the ordinary queue through
++# ``enqueue`` and from there on every existing rule applies unchanged: claimed at most once, an
++# uncertain send is fenced ``unknown`` and never replayed, a cancelled execution stays cancelled.
++HOLD_RECHECK_SECONDS = 300.0
++_HOLDS_SCHEMA = """CREATE TABLE IF NOT EXISTS delivery_holds (
++    execution_id TEXT PRIMARY KEY,
++    job_json TEXT NOT NULL,
++    content TEXT NOT NULL,
++    for_failure INTEGER NOT NULL DEFAULT 0,
++    deliver_after REAL NOT NULL,
++    created_at TEXT NOT NULL
++)"""
++
++
++def _gate_enabled() -> bool:
++    try:
++        from hermes_cli.config import load_config_readonly
++
++        return bool((load_config_readonly().get("cron") or {}).get("deliver_gate"))
++    except Exception:
++        return False
++
++
++def deliver_gate(
++    job: dict, content: str, *, for_failure: bool = False, surface: str = "cron",
++    now: Optional[float] = None,
++) -> Optional[float]:
++    """Epoch seconds before which this delivery must wait, or None to send now.
++
++    None at once unless the active profile sets ``cron.deliver_gate``. With it set, the profile's
++    ``pre_deliver`` hook decides: ``{"deliver_after": t}`` holds until ``t``, ``{"open": True}``
++    sends. The latest hold wins. No usable answer (plugin missing, hook raised) is ``math.inf``:
++    closed, until nobody knows when. ``hold`` parks that for ``HOLD_RECHECK_SECONDS`` and the gate
++    is asked again: a late message can be recovered, a sent one cannot.
++    """
++    if not _gate_enabled():
++        return None
++    at = time.time() if now is None else float(now)
++    try:
++        from hermes_cli.lifecycle import invoke_hook
++
++        answers = invoke_hook(
++            "pre_deliver", job=job, content=content, for_failure=for_failure, surface=surface)
++    except Exception:
++        logger.warning("Delivery gate hook failed; holding", exc_info=True)
++        answers = []
++    holds, opened = [], False
++    for answer in answers:
++        if not isinstance(answer, dict):
++            continue
++        if answer.get("deliver_after") is not None:
++            try:
++                holds.append(float(answer["deliver_after"]))
++            except (TypeError, ValueError):
++                holds.append(math.inf)
++        elif answer.get("open") is True:
++            opened = True
++    if holds:
++        return max(holds) if max(holds) > at else None
++    return None if opened else math.inf
++
++
++def hold(
++    execution_id: str, job: dict, content: str, *, deliver_after: float, for_failure: bool = False,
++) -> dict:
++    """Park one whole delivery until ``deliver_after``. Idempotent per execution id; touches no transport."""
++    if deliver_after == math.inf:
++        deliver_after = time.time() + HOLD_RECHECK_SECONDS
++    with _transaction() as conn:
++        conn.execute("BEGIN IMMEDIATE")
++        conn.execute(_HOLDS_SCHEMA)
++        conn.execute(
++            """INSERT OR IGNORE INTO delivery_holds
++               (execution_id, job_json, content, for_failure, deliver_after, created_at)
++               VALUES (?, ?, ?, ?, ?, ?)""",
++            (
++                str(execution_id),
++                json.dumps(job, ensure_ascii=False, sort_keys=True, default=str),
++                str(content),
++                int(bool(for_failure)),
++                float(deliver_after),
++                _hermes_now().isoformat(),
++            ),
++        )
++        row = conn.execute(
++            "SELECT execution_id, deliver_after, created_at FROM delivery_holds WHERE execution_id=?",
++            (str(execution_id),),
++        ).fetchone()
++    return dict(row)
++
++
++def sweep_holds(now: Optional[float] = None) -> bool:
++    """Run before a drain claims anything; returns whether this profile gates its deliveries.
++
++    A profile that never held anything and has the gate off does one read and returns. Otherwise:
++    a pending row the gate now closes (queued just before the window shut) is parked, never having
++    been claimed; a hold whose time has come is asked once more (the owner's clock may have moved)
++    and then enters the ordinary queue through ``enqueue``. ``enqueue`` is keyed by the same
++    execution id and honours the archive and tombstones, so a crash between its insert and the
++    delete below cannot produce a second send, and a cancelled execution is dropped unsent.
++    """
++    at = time.time() if now is None else float(now)
++    gated = _gate_enabled()
++    with _transaction() as conn:
++        has_holds = conn.execute(
++            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='delivery_holds'"
++        ).fetchone() is not None
++        if not gated and not has_holds:
++            return False
++        pending = [dict(row) for row in conn.execute(
++            "SELECT execution_id, job_json, content, for_failure FROM deliveries "
++            "WHERE status='pending'")] if gated else []
++        due = [dict(row) for row in conn.execute(
++            "SELECT * FROM delivery_holds WHERE deliver_after<=? "
++            "ORDER BY deliver_after, created_at, execution_id", (at,))] if has_holds else []
++    for row in pending:
++        wait = deliver_gate(
++            json.loads(row["job_json"]), row["content"], for_failure=bool(row["for_failure"]), now=at)
++        if wait is None:
++            continue
++        wait = min(wait, at + HOLD_RECHECK_SECONDS) if wait == math.inf else wait
++        with _transaction() as conn:
++            conn.execute("BEGIN IMMEDIATE")
++            conn.execute(_HOLDS_SCHEMA)
++            conn.execute(
++                """INSERT OR IGNORE INTO delivery_holds
++                   (execution_id, job_json, content, for_failure, deliver_after, created_at)
++                   SELECT execution_id, job_json, content, for_failure, ?, created_at
++                   FROM deliveries WHERE execution_id=? AND status='pending'""",
++                (wait, row["execution_id"]))
++            conn.execute(
++                "DELETE FROM deliveries WHERE execution_id=? AND status='pending'",
++                (row["execution_id"],))
++    for row in due:
++        job = json.loads(row["job_json"])
++        wait = deliver_gate(
++            job, row["content"], for_failure=bool(row["for_failure"]),
++            surface=str(job.get("_hold_surface") or "cron"), now=at)
++        if wait is not None:
++            with _transaction() as conn:
++                conn.execute(
++                    "UPDATE delivery_holds SET deliver_after=? WHERE execution_id=?",
++                    (at + HOLD_RECHECK_SECONDS if wait == math.inf else wait, row["execution_id"]))
++            continue
++        enqueue(row["execution_id"], job, row["content"], for_failure=bool(row["for_failure"]))
++        with _transaction() as conn:
++            conn.execute("DELETE FROM delivery_holds WHERE execution_id=?", (row["execution_id"],))
++    return gated
++
++
+ def drain(
+     send: Callable[[dict, str, bool], Optional[str]], *, limit: int = 20
+ ) -> int:
+     """Deliver pending rows through *send*, terminalizing every claimed row."""
+     recover_abandoned()
++    gated = sweep_holds()
+     processed = 0
+     for _ in range(max(0, limit)):
+         row = claim_next()
+         if row is None:
+             break
++        if gated:
++            row["job"]["_hold_released"] = True  # the gate was asked just before this claim
+         with _lock:
+             _ACTIVE_DELIVERIES.add(row["execution_id"])
+         try:
+diff --git a/cron/scheduler_delivery.py b/cron/scheduler_delivery.py
+index 650d444d79c1d78dc91d74193473ca45ee8c07ea..455c2fddf9291cfd426fd1d2c0cd7a311e2d4366 100644
+--- a/cron/scheduler_delivery.py
++++ b/cron/scheduler_delivery.py
+@@ -1991,6 +1991,26 @@ def _deliver_result(
+         _record_delivery_verification(job, [])
+         return _unresolved_delivery_outcome(job, for_failure)
+ 
++    # Per-profile hold (cron.deliver_gate, off by default): park the whole delivery before any
++    # transport is touched; the queue drain sends it once when due. A row the drain just released
++    # was re-checked there and is not asked again.
++    if job.pop("_hold_released", None) is None:
++        from cron.delivery_queue import deliver_gate, hold
++
++        deliver_after = deliver_gate(job, content, for_failure=for_failure)
++        if deliver_after is not None:
++            import uuid
++
++            hold_id = str(job.get("execution_id") or uuid.uuid4().hex) + (":failure" if for_failure else "")
++            receipts = {
++                f"{target['platform']}:{target['chat_id']}": {"status": "queued", "held": True}
++                for target in targets}
++            hold(hold_id, {**job, "last_delivery_queued": receipts}, content,
++                 deliver_after=deliver_after, for_failure=for_failure)
++            job["_bot_chat_delivery_receipts"] = receipts
++            _record_delivery_verification(job, [])  # run status reads "delivery_queued", never "delivered"
++            return None
++
+     # Restart-safe workers have no live gateway adapters: hand the send back through a durable
+     # queue so the current or replacement gateway performs it with relay/E2EE parity. The execution
+     # id is the idempotency key (the queue never retries an uncertain claimed send). Match on THIS
+@@ -2026,7 +2046,7 @@ def _deliver_result(
+     # Targets acked with NO evidence (bare SendResult(success=True) — Slack/Matrix/Mattermost);
+     # persisted as ``last_delivery_unverified`` so `hermes cron list` shows it.
+     unverified_targets: list = []
+-    if wrap_response:
++    if wrap_response and not job.get("_verbatim"):  # a held `hermes send` is not a cron response
+         task_name = job.get("name", job["id"])
+         delivery_content = (
+             f"Cronjob Response: {task_name}\n"
+diff --git a/hermes_cli/plugins.py b/hermes_cli/plugins.py
+index 75a16aad52ff60fb59d48118010ff50ff45b2c87..b82ef23463d242e07126ea946e8e4c7b48e87918 100644
+--- a/hermes_cli/plugins.py
++++ b/hermes_cli/plugins.py
+@@ -108,6 +108,11 @@ _install_plugin_debug_handler()
+ 
+ VALID_HOOKS: Set[str] = {
+     "cron_execute",  # Claimed native scheduled dispatch; registered consumer may handle.
++    # pre_deliver: asked before a scheduled result or a `hermes send` message leaves, and only when
++    # the profile sets cron.deliver_gate (cron/delivery_queue.py::deliver_gate). Kwargs: job, content,
++    # for_failure, surface ("cron" | "send"). Return {"deliver_after": <epoch seconds>} to hold the
++    # whole delivery until then, or {"open": True} to send now. No answer holds (fail closed).
++    "pre_deliver",
+     "pre_tool_call", "post_tool_call", "transform_terminal_output", "transform_tool_result",
+     # transform_llm_output: return a replacement string (first non-None wins) or None.
+     "transform_llm_output", "pre_llm_call", "post_llm_call",
+diff --git a/tests/cron/test_deliver_gate.py b/tests/cron/test_deliver_gate.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..546844d87ab56a1466df7632da83c65e2bb4c7cc
+--- /dev/null
++++ b/tests/cron/test_deliver_gate.py
+@@ -0,0 +1,116 @@
++"""cron.deliver_gate: a profile can hold scheduled results and sends whole until a time its plugin names.
++
++Off unless the profile's config sets ``cron.deliver_gate``. Made-up data only.
++"""
++from __future__ import annotations
++
++import math
++from unittest.mock import Mock
++
++import pytest
++
++import cron.delivery_queue as queue
++
++
++@pytest.fixture
++def db(tmp_path, monkeypatch):
++    monkeypatch.setattr(queue, "DELIVERY_DB", tmp_path / "deliveries.db")
++    return tmp_path / "deliveries.db"
++
++
++def gate(monkeypatch, *, enabled=True, answers=None, raises=False):
++    monkeypatch.setattr(queue, "_gate_enabled", lambda: enabled)
++    calls = []
++
++    def invoke_hook(name, **kwargs):
++        calls.append((name, kwargs))
++        if raises:
++            raise RuntimeError("plugin broke")
++        return list(answers(kwargs) if callable(answers) else (answers or []))
++
++    import hermes_cli.lifecycle as lifecycle
++    monkeypatch.setattr(lifecycle, "invoke_hook", invoke_hook)
++    return calls
++
++
++def test_gate_off_sends_now_and_never_asks_the_hook(db, monkeypatch):
++    calls = gate(monkeypatch, enabled=False, answers=[{"deliver_after": 9e12}])
++    assert queue.deliver_gate({"id": "j"}, "hi") is None
++    assert calls == []
++
++
++def test_gate_off_drain_is_unchanged(db, monkeypatch):
++    gate(monkeypatch, enabled=False)
++    queue.enqueue("exec-1", {"id": "job-1"}, "brief")
++    send = Mock(return_value=None)
++    assert queue.drain(send) == 1
++    send.assert_called_once_with({"id": "job-1"}, "brief", False)
++
++
++@pytest.mark.parametrize("answers,expected", [
++    ([{"open": True}], None),
++    ([{"deliver_after": 2000.0}], 2000.0),
++    ([{"deliver_after": 2000.0}, {"deliver_after": 3000.0}, {"open": True}], 3000.0),   # latest hold wins
++    ([{"deliver_after": 500.0}], None),                                                 # already past
++    ([], math.inf),                                                                     # no answer: closed
++    ([None, "junk"], math.inf),
++    ([{"deliver_after": "soon"}], math.inf),
++])
++def test_gate_answers(db, monkeypatch, answers, expected):
++    gate(monkeypatch, answers=answers)
++    assert queue.deliver_gate({"id": "j"}, "hi", now=1000.0) == expected
++
++
++def test_hook_failure_fails_closed(db, monkeypatch):
++    gate(monkeypatch, raises=True)
++    assert queue.deliver_gate({"id": "j"}, "hi", now=1000.0) == math.inf
++
++
++def test_hold_is_idempotent_and_released_once_when_due(db, monkeypatch):
++    until = {"t": 2000.0}
++    gate(monkeypatch, answers=lambda kw: [{"deliver_after": until["t"]}])
++    queue.hold("exec-h", {"id": "job-h", "deliver": "chat"}, "morning note", deliver_after=2000.0)
++    queue.hold("exec-h", {"id": "job-h", "deliver": "chat"}, "changed", deliver_after=2000.0)
++    send = Mock(return_value=None)
++
++    monkeypatch.setattr(queue.time, "time", lambda: 1500.0)
++    assert queue.drain(send) == 0                     # not due: nothing claimed, nothing sent
++    send.assert_not_called()
++
++    until["t"] = 0.0                                  # the plugin now opens the gate
++    monkeypatch.setattr(queue.time, "time", lambda: 2500.0)
++    assert queue.drain(send) == 1
++    job, content, for_failure = send.call_args.args
++    assert content == "morning note" and job["id"] == "job-h" and job["_hold_released"] is True
++    assert queue.drain(send) == 0                     # sent exactly once
++    assert send.call_count == 1
++
++
++def test_due_hold_is_asked_again_and_stays_parked_if_still_closed(db, monkeypatch):
++    gate(monkeypatch, answers=[{"deliver_after": 9000.0}])
++    queue.hold("exec-x", {"id": "job-x"}, "late", deliver_after=1000.0)
++    send = Mock(return_value=None)
++    monkeypatch.setattr(queue.time, "time", lambda: 2000.0)
++    assert queue.drain(send) == 0
++    send.assert_not_called()
++
++
++def test_pending_row_queued_before_the_window_closed_is_parked_unclaimed(db, monkeypatch):
++    gate(monkeypatch, enabled=False)
++    queue.enqueue("exec-p", {"id": "job-p"}, "queued earlier")
++    gate(monkeypatch, answers=[{"deliver_after": 9e12}])
++    send = Mock(return_value=None)
++    assert queue.drain(send) == 0
++    send.assert_not_called()
++    assert queue.get_status("exec-p") is None or queue.get_status("exec-p")["status"] != "delivering"
++
++
++def test_cancelled_execution_is_not_sent_after_its_hold(db, monkeypatch):
++    gate(monkeypatch, answers=[{"open": True}])
++    queue.enqueue("exec-c", {"id": "job-c"}, "x")
++    queue.cancel_execution("exec-c", "user cancelled")
++    queue.hold("exec-c", {"id": "job-c"}, "x", deliver_after=0.0)
++    send = Mock(return_value=None)
++    queue.drain(send)
++    send.assert_not_called()
++
+diff --git a/tools/send_message_tool.py b/tools/send_message_tool.py
+index aa05980459ddd11465f8283c70b44f8a8e54aadb..c9b31bb3e6327f19ef8bbf0cbcff1987f18b2dbd 100644
+--- a/tools/send_message_tool.py
++++ b/tools/send_message_tool.py
+@@ -264,6 +264,27 @@ def _handle_send(args):
+     if _relay_denial:
+         return tool_error(_relay_denial)
+ 
++    # Per-profile hold (cron.deliver_gate, off by default): the same gate and durable hold scheduled
++    # results use. The original text (MEDIA tags included) and target are parked; nothing is sent now.
++    from cron.delivery_queue import deliver_gate, hold
++    hold_job = {"id": "send-hold", "name": "held send", "deliver": target, "_verbatim": True,
++                "_hold_surface": "send"}
++    deliver_after = deliver_gate(hold_job, message, surface="send")
++    if deliver_after == float("inf"):
++        # The gate is on but gave no answer. The caller still owns this message and its retry, so
++        # nothing is parked here: parking each retry would deliver the same message several times.
++        return tool_error("This profile's delivery gate gave no answer. Nothing was sent or queued; try again later.")
++    if deliver_after is not None:
++        import uuid
++
++        hold_job["execution_id"] = "send-" + uuid.uuid4().hex
++        hold(hold_job["execution_id"], hold_job, message, deliver_after=deliver_after)
++        return json.dumps({
++            "skipped": True, "held": True, "hold_id": hold_job["execution_id"],
++            "deliver_after": deliver_after,
++            "note": "Held by this profile's delivery gate. It will be delivered once when the hold "
++                    "ends. Do not send it again."})
++
+     try:
+         from model_tools import _run_async
+         # Only custom plugin handlers receive the complete typed request. ``mentions`` is a WhatsApp-only
