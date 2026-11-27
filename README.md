@@ -65,8 +65,8 @@ project; avoid creating extra ones.
 - Only your own iMessage number counts as you. Email from you, group chats and other apps never approve anything.
 - A promised reply ("send it in 10 minutes") goes out once. If Zeus can't tell whether a send went through,
   it asks you instead of sending again.
-- The purchase lock guards Zeus's own browser steps. Don't give Zeus other ways to drive your browser
-  (your own scripts, other automation tools) while it shops.
+- While a store or checkout page is open, Zeus won't run scripts or programs from the command line,
+  so nothing can press "Place order" around the purchase lock. Zeus's own `zeus` tools still work.
 - Photon status stickers are off.
 
 ## Configuration

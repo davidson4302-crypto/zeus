@@ -449,3 +449,51 @@ def test_booking_yes_without_the_trip_is_refused(plugin):
     page = FakeBrowser('https://www.southwest.com/air/booking/purchase', 'Trip total $189.00', [btn])
     refused(page, "click_element('#purchase')", 'booking_needs_details')
     assert grant_state() == 'approved'
+
+
+# ---- shell programs while a checkout is open -------------------------------------------------------------------------
+
+RISKY_SHELL = ['python3 /tmp/x.py', 'python -c "import json"', './drive.sh', 'node buy.mjs', 'bash -lc "make"',
+               '/usr/bin/env python3 helper.py', 'curl -s http://localhost:9334/', 'osascript -e "tell app"',
+               'zeus-life status | python3 evil.py', 'cd /tmp; ~/go.py', 'uv run thing.py', 'npx playwright-cli',
+               'sudo python3 x.py', 'FOO=1 node x.js', 'if true; then python3 x.py; fi', 'echo hi && ./x.sh',
+               'echo $(python3 -c 1)', 'source ./env.sh']
+SAFE_SHELL = ['ls -la', 'cat notes.txt', 'grep -n total receipt.txt', 'zeus-life status', 'zeus-buy yes walmart 12.34',
+              'zeus life watches', 'python3 -I /pkg/zeus_ai/skills/productivity/zeus-reservations/reservations.py tabs',
+              'date', 'echo python is a snake', 'git status', 'grep -r node .', 'cat ./notes.py']
+
+
+def test_shell_programs_are_refused_while_a_checkout_is_open(plugin, monkeypatch):
+    monkeypatch.setattr(plugin.module, 'hot_tabs', lambda timeout=1.5: ['https://www.walmart.com/checkout'])
+    for cmd in RISKY_SHELL:
+        block, _ = hook('terminal', {'command': cmd})
+        assert block and ('outside the purchase lock' in block or 'browser directly' in block), cmd
+    for cmd in SAFE_SHELL:
+        assert hook('terminal', {'command': cmd})[0] is None, cmd
+    assert hook('execute_code', {'code': 'print(1)'})[0]
+
+
+def test_shell_programs_run_when_no_checkout_is_open(plugin, monkeypatch):
+    monkeypatch.setattr(plugin.module, 'hot_tabs', lambda timeout=1.5: [])
+    for cmd in RISKY_SHELL[:6]:
+        assert hook('terminal', {'command': cmd})[0] is None, cmd
+    assert hook('execute_code', {'code': 'print(1)'})[0] is None
+
+
+def test_shell_programs_are_refused_when_the_tabs_cannot_be_read(plugin, monkeypatch):
+    monkeypatch.setattr(plugin.module, 'hot_tabs', lambda timeout=1.5: None)
+    assert hook('terminal', {'command': 'python3 x.py'})[0]
+    assert hook('terminal', {'command': 'ls'})[0] is None
+
+
+def test_no_browser_running_counts_as_no_checkout(plugin):
+    # BUY_CDP_URL points at a closed port in this suite: connection refused means no browser at all.
+    assert plugin.module.hot_tabs() == []
+    assert hook('terminal', {'command': 'python3 x.py'})[0] is None
+
+
+def test_a_broken_lock_refuses_shell_programs(plugin, monkeypatch):
+    def broken(timeout=1.5): raise RuntimeError('boom')
+    monkeypatch.setattr(plugin.module, 'hot_tabs', broken)
+    assert 'needs a look' in hook('terminal', {'command': 'python3 x.py'})[0]
+    assert hook('terminal', {'command': 'ls'})[0] is None

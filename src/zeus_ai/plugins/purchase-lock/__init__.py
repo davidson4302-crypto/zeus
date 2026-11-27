@@ -33,6 +33,7 @@ import os
 import re
 import sys
 import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -60,6 +61,30 @@ SHELL_TOOLS = {'terminal', 'execute_code', 'process_manage', 'bash', 'shell'}
 DIRECT = re.compile(r'9333|agents-chrome|Input\.dispatch|browser[-_]harness|agent-browser|remote-debugging|devtools/(?:browser|page)|'
                     r'BU_CDP|BU_NAME|/json/(?:list|version|new)|chrome-remote-interface|puppeteer|playwright|pychrome|'
                     r'bu(?:-[\w-]+)?\.sock', re.I)
+# A shell command that starts a program (an interpreter, a script file, a network tool) could open its own browser
+# connection, which no text check can see. While a store or checkout page is open, those are refused.
+_CMD = (r'(?:^|[;&|(`\n{]|\$\()\s*(?:(?:sudo|env|exec|nohup|time|nice|xargs|command|then|do|else)\s+(?:-\S+\s+)*)*'
+        r'(?:\w+=\S*\s+)*')
+RUNS_PROGRAM = re.compile(_CMD + r'(?:(?:\S*/)?(?:python[\d.]*|pypy\d*|node|nodejs|deno|bun|npx|ruby|perl|php|osascript|'
+                          r'swift|java|sh|bash|zsh|fish|dash|curl|wget|websocat|wscat|socat|nc|ncat|telnet|uv|pipx|source|\.)'
+                          r'(?=$|[\s;&|)`])|(?:\.{1,2}/|/|~/)\S+)', re.I)
+# Zeus's own tools: they read pages only, and any press they lead to goes through the lock.
+ZEUS_TOOLS = re.compile(r'(?:python[\d.]*\s+(?:-I\s+)?)?\S*(?:zeus-reservations/reservations\.py|zeus_ai/engine/lifecli\.py)'
+                        r'(?=$|[\s;&|)])|(?:^|(?<=[\s;&|(]))(?:\S*/)?zeus(?:-(?:life|buy|login|checkpoint|snapshot))?(?=$|[\s;&|)])')
+
+
+def shell_text(name: str, args: dict) -> str:
+    value = args.get('command') if name != 'execute_code' else args.get('code')
+    return str(value if value is not None else json.dumps(args, default=str))[:20000]
+
+
+def runs_program(name: str, args: dict) -> bool:
+    """Could this shell step start a program that reaches the browser on its own? execute_code always could."""
+    if name == 'execute_code':
+        return True
+    return bool(RUNS_PROGRAM.search(ZEUS_TOOLS.sub(' ', shell_text(name, args))))
+
+
 INPUT_WORDS = re.compile(r'click|type|key|press|enter|return|drag|set_value', re.I)
 READ_ONLY_BROWSER = {'browser_vault'}     # lists logins and fills boxes; never presses
 
@@ -178,6 +203,11 @@ def hot_tabs(timeout: float = 1.5):
     try:
         with urllib.request.urlopen(cdp_list_url(), timeout=timeout) as resp:
             tabs = json.loads(resp.read().decode('utf-8', 'replace'))
+    except urllib.error.URLError as error:
+        # Nothing listening on the browser port: no browser, so no open checkout. Anything else is "cannot read".
+        return [] if isinstance(getattr(error, 'reason', None), ConnectionRefusedError) else None
+    except ConnectionRefusedError:
+        return []
     except Exception:
         return None
     fence = gateway_fence()
@@ -204,6 +234,9 @@ TEXT = {
     'raw_browser_tool': ('Not run. A store or checkout page is open in the browser ({page}), and this tool sends input to it '
                          'outside the purchase lock. Use browser_exec with click_element for buttons; Place order also '
                          'needs the owner\'s yes first (zeus-buy yes).'),
+    'checkout_shell': ('Not run. A store or checkout page is open in the browser ({page}), and this command starts a program '
+                       'that could reach the browser outside the purchase lock. Do browser steps with browser_exec, finish or '
+                       'close the checkout first, or use the zeus tools. Nothing ran.'),
     'lock_error': ('Not run. The purchase lock hit a problem checking this step ({why}), so it did not run. Tell the owner '
                    'in one line that the purchase lock needs a look; do not try another way.'),
 }
@@ -230,8 +263,14 @@ def check(name: str, args: dict) -> dict | None:
             return {'reason': 'reaches_around', 'what': around}
         return {'action': 'modify', 'args': {'code': prelude(owner_turn()) + code}}
     if name in SHELL_TOOLS:
-        text = json.dumps(args, default=str)[:20000]
-        return {'reason': 'direct_browser'} if DIRECT.search(text) else None
+        if DIRECT.search(json.dumps(args, default=str)[:20000]):
+            return {'reason': 'direct_browser'}
+        if not runs_program(name, args):
+            return None
+        tabs = hot_tabs()
+        if tabs is None:
+            return {'reason': 'checkout_shell', 'page': 'the open tabs could not be read'}
+        return {'reason': 'checkout_shell', 'page': tabs[0]} if tabs else None
     if name in ('browser_cdp', 'browser_dialog', 'computer_use') or name.startswith('browser_'):
         if not raw_tool_risky(name, args):
             return None
@@ -254,7 +293,7 @@ def belt(tool_name='', args=None, session_id='', **_):
         verdict = check(name, args)
     except Exception as error:                          # fail closed for anything that can reach the browser
         if name == 'browser_exec' or name.startswith('browser_') or name == 'computer_use' or (
-                name in SHELL_TOOLS and DIRECT.search(json.dumps(args, default=str)[:20000])):
+                name in SHELL_TOOLS and (DIRECT.search(json.dumps(args, default=str)[:20000]) or runs_program(name, args))):
             verdict = {'reason': 'lock_error', 'why': f'{type(error).__name__}: {str(error)[:120]}'}
         else:
             _log({'action': 'belt', 'tool': name[:80], 'verdict': 'error', 'error': repr(error)[:200]})
