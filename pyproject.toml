@@ -1,0 +1,15 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "zeus-ai"
+version = "0.0.1.dev0"
+description = "A proactive, safety-first personal assistant for Hermes Agent, over iMessage."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.11,<3.15"
+dependencies = []  # filled in during extraction
+
+[project.scripts]
+zeus = "zeus_ai.cli:main"
