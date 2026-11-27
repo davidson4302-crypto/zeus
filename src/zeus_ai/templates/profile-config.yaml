@@ -1,0 +1,115 @@
+# Hermes profile config for Zeus, written by `zeus setup`. Safe to edit; `zeus setup` keeps your edits
+# unless you pass --reset-config. Placeholders like ${owner_tz} are filled in by setup.
+model:
+  default: ${chat_model}
+  provider: ${model_provider}
+agent:
+  human_request_priority: true
+  reasoning_effort: medium
+  turn_liveness:
+    timeout_s: 600.0
+    poll_s: 15.0
+  gateway_timeout: 900
+  gateway_timeout_warning: 300
+  session_stall_timeout: 300
+  stall_guards: true
+  budget_warning_ratio: 0.75
+  frozen_process_completion_origin: true
+  max_turns: 30
+  replay_injected_context: false
+  system_prompt: ' Your own email tools are agentmail_inbox_list, agentmail_message_read, agentmail_send and agentmail_send_status. They use only your assigned mailbox. Preserve real action approvals, STOPs and uncertain-send no-replay.'
+display:
+  busy_ack_enabled: false
+  busy_input_mode: steer
+  background_process_notifications: false
+  memory_notifications: false
+  personality: ''
+  message_reactions: true
+  show_reasoning: false
+  tool_progress: false
+  interim_assistant_messages: false
+  thinking_progress: false
+  busy_ack_detail: false
+  long_running_notifications: false
+  live_status: false
+  suppress_warning_notifications: true
+  session_reset_notice: concise
+memory:
+  memory_enabled: true
+  user_profile_enabled: true
+  memory_char_limit: 50000
+  user_char_limit: 10000
+plugins:
+  enabled:
+    - aaa-zeus-scope
+    - agentmail
+    - cross-surface-recall
+    - imessage-approvals
+    - life-items
+    - life-work-guard
+    - outbound-message-context
+    - own-agentmail
+    - purchase-lock
+    - quiet-personal-replies
+    - zeus-guidance
+    - zeus-insight
+    - zeus-work
+skills:
+  external_dirs: []
+  create_dir: ${profile_dir}/learned-skills
+  project_discovery: false
+  preserve_full_lookup_names: true
+terminal:
+  cwd: ${profile_dir}/workspace
+  timeout: 1800
+  home_mode: profile
+  auto_source_bashrc: false
+cron:
+  deliver_gate: true          # quiet hours: scheduled results and sends wait until the end of quiet hours (Zeus Hermes patch)
+  wrap_response: false
+  review_missed_runs: false
+  model: ${work_model}
+  model_provider: ${model_provider}
+  reasoning_effort: medium
+delegation:
+  provider: ${model_provider}
+  model: ${work_model}
+  reasoning_effort: medium
+  durable_stop: true
+platforms:
+  photon:
+    enabled: true
+    extra:
+      reactions: meaning
+      link_bubbles: true
+      durable_delivery: true
+    gateway_restart_notification: false
+shared_conversation:
+  enabled: true
+  private_owner_only: true
+browser:
+  cdp_url: "http://127.0.0.1:${chrome_port}"
+  action_receipts:
+    enabled: true
+    screenshots: true
+    expected_timezone: ${owner_tz}
+timezone: ${owner_tz}
+tools:
+  tool_search:
+    defer:
+      - computer_use
+      - image_generate
+      - todo_list
+      - process_manage
+      - cronjob_manage
+      - clarify
+      - skills_list
+      - text_to_speech
+      - vision_analyze
+      - skill_manage
+hooks:
+  output_spill:
+    max_chars: 30000
+session_reset:
+  mode: daily
+  at_hour: ${quiet_start}

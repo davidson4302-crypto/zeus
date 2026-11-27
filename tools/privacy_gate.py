@@ -28,6 +28,7 @@ CHECKS = {
     'email': re.compile(r"[A-Za-z0-9._%+'-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+"),
 }
 FAKE_PHONE = re.compile(r'555[ .-]?01\d\d|\+1555')
+ALLOW_MARK = 'privacy-gate: allow'   # a line deliberately naming the copyright holder
 SKIP_DIRS = {'.git', '__pycache__', '.venv', 'dist', 'build'}
 SKIP_FILES = {'privacy_gate.py', 'LICENSE'}   # LICENSE names the copyright holder on purpose
 
@@ -57,6 +58,8 @@ def scan(paths: list[Path], terms: list[re.Pattern]) -> list[str]:
                 continue
             rel = f.relative_to(ROOT) if f.is_relative_to(ROOT) else f
             for n, line in enumerate(text.splitlines(), 1):
+                if ALLOW_MARK in line:
+                    continue
                 for cat, rx in CHECKS.items():
                     for m in rx.finditer(line):
                         s = m.group(0)

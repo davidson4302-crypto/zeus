@@ -1,15 +1,45 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling>=1.24"]
 build-backend = "hatchling.build"
 
 [project]
 name = "zeus-ai"
-version = "0.0.1.dev0"
+version = "0.1.0"
 description = "A proactive, safety-first personal assistant for Hermes Agent, over iMessage."
 readme = "README.md"
 license = "MIT"
-requires-python = ">=3.11,<3.15"
-dependencies = []  # filled in during extraction
+license-files = ["LICENSE"]
+requires-python = ">=3.11"
+authors = [{ name = "Jason Davidson" }]  # privacy-gate: allow (copyright holder)
+keywords = ["assistant", "hermes-agent", "imessage", "agent", "proactive"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Console",
+  "Intended Audience :: End Users/Desktop",
+  "Operating System :: MacOS",
+  "Programming Language :: Python :: 3",
+  "Topic :: Communications :: Chat",
+]
+# Zeus itself is standard library only. Its runtime (Hermes Agent, Photon, Composio) is set up by `zeus setup`.
+dependencies = []
+
+[project.optional-dependencies]
+test = ["pytest>=8"]
+
+[project.urls]
+Homepage = "https://github.com/davidson4302-crypto/zeus"
+"Hermes Agent" = "https://github.com/NousResearch/hermes-agent"
+Photon = "https://photon.codes"
+Composio = "https://composio.dev"
 
 [project.scripts]
 zeus = "zeus_ai.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/zeus_ai"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src/zeus_ai", "tests", "tools", "docs", "README.md", "LICENSE", "pyproject.toml"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

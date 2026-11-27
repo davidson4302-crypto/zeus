@@ -28,7 +28,7 @@ it is.
 
 The agent's own character stays: the owner's name or nickname and an occasional emoji are never findings, and an emoji
 after a deleted sentence is kept. A closing offer is deleted whether or not it has the owner's name in it (the name is
-style, it does not protect an offer); the setting keep_his_name turns that back.
+style, it does not protect an offer); the setting keep_owner_name turns that back.
 """
 from __future__ import annotations
 
@@ -63,7 +63,7 @@ _cfg = _load_settings()          # the engine's settings module (named _cfg: `se
 # - when the owner asked for something long by nature (a draft, an explanation, a comparison, steps) length is not
 #   checked.
 # - no_rewrite_over 150: a reply that far over a cap is not a slip, it is a long answer; it is logged, never rewritten.
-DEFAULTS = {'chat_words': 60, 'rundown_words': 75, 'words_per_ask': 20, 'no_rewrite_over': 150, 'keep_his_name': False}
+DEFAULTS = {'chat_words': 60, 'rundown_words': 75, 'words_per_ask': 20, 'no_rewrite_over': 150, 'keep_owner_name': False}
 # - confirm_words 30: telling the owner a small thing is set (they are away or home, they signed in again, they asked
 #   to be told when a page changes). Good answers here are one line.
 DEFAULTS['confirm_words'] = 30
@@ -370,7 +370,7 @@ def carries(sentence: str, settings: dict, matched: str = '') -> str:
     if NOT_CONFIRMED.search(rest):
         return 'it says what is not done or not confirmed'
     if HIS_NAME.search(sentence):
-        if settings.get('keep_his_name', True):
+        if settings.get('keep_owner_name', True):
             return "it has the owner's name in it"
     if NAME.search(HIS_NAME.sub('you', sentence)):
         return 'it names someone or something'
