@@ -1,0 +1,46 @@
+{
+ "about": "Zeus phone sign-in handoff site table. hosts: the ONLY hosts the handoff tab may be on and typed into (a host also covers its own subdomains, so walmart.com covers identity.walmart.com). start_url: where the tab opens when the engine's signin-sites.json entry is still a placeholder; once that entry is filled in, its account_url is used instead. The start_url values are best-effort public sign-in pages: check each once in Zeus's Chrome, or better, fill in signin-sites.json. store: the purchase lock store id, for its checkout-page patterns. Site ids match signin-sites.json and zeus-login. To use your own table, point config signin.sites_file (or HANDOFF_SITES) at a file of the same shape; a store whose sign-in lives on a parent company's domain lists both hosts.",
+ "sites": {
+  "walmart": {
+   "name": "Walmart",
+   "hosts": [
+    "walmart.com"
+   ],
+   "start_url": "https://www.walmart.com/account/login",
+   "store": "walmart"
+  },
+  "amazon": {
+   "name": "Amazon",
+   "hosts": [
+    "amazon.com"
+   ],
+   "start_url": "https://www.amazon.com/gp/css/homepage.html",
+   "store": "amazon"
+  },
+  "samsclub": {
+   "name": "Sam's Club",
+   "hosts": [
+    "samsclub.com"
+   ],
+   "start_url": "https://www.samsclub.com/login",
+   "store": "samsclub"
+  },
+  "southwest": {
+   "name": "Southwest",
+   "hosts": [
+    "southwest.com"
+   ],
+   "start_url": "https://www.southwest.com/myaccount",
+   "store": "southwest"
+  },
+  "ralphs": {
+   "name": "Ralphs",
+   "hosts": [
+    "ralphs.com",
+    "login.kroger.com"
+   ],
+   "start_url": "https://www.ralphs.com/signin",
+   "store": "ralphs"
+  }
+ }
+}

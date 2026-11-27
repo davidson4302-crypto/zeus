@@ -1,0 +1,8 @@
+name: life-work-guard
+version: 1.0.0
+description: "A background prep job of Zeus's life pipes cannot send, change or delete anything. Each tool call such a job makes is judged before it runs, with the same rules the after-the-fact audit uses, and stopped if it would act. Also answers Hermes's pre_deliver question so scheduled results and hermes send messages wait out the owner's quiet hours (quiet_hours.start to quiet_hours.end on the owner's clock), except what Zeus's own chat turn sends within an hour of the owner's message."
+provides_hooks:
+  - pre_tool_call
+  - pre_deliver
+  - pre_llm_call
+  - post_tool_call

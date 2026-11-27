@@ -1,0 +1,533 @@
+{
+ "about": "Zeus purchase lock store table. Patterns are Python regexes, matched case-insensitively. Button labels are normalised first (lower case, money amounts and punctuation removed, spaces collapsed) and must match a label pattern as a WHOLE, so 'Place order' matches but 'Purchase history' does not. 'strong' labels are a purchase button on any page of a store below (and on any checkout page); 'weak' labels count only on a checkout page. Store ids match zeus-login: walmart amazon samsclub southwest ralphs. A store with a 'booking' block is a booking store: on its final review / purchase page the lock also reads the trip (flight numbers, the date of each flight, times, airport codes, passenger names and count, fare, refund words) and a press passes only when they match the trip in the owner's yes. Only booking kind 'flight' has a checker; any other kind fails closed. All booking patterns are general knowledge of Southwest's pages, not read off the real site (unverified).",
+ "version": 2,
+ "generic": {
+  "commit_strong": [
+   "(?:place|submit|complete|confirm|finish)(?: and pay)? (?:your |my |this |the )?(?:order|orders|purchase)(?: now| securely| and pay)?",
+   "buy (?:it )?now",
+   "pay now",
+   "pay securely",
+   "confirm (?:and|&) pay",
+   "complete (?:your )?(?:purchase|payment|checkout|booking)",
+   "confirm (?:your )?(?:purchase|payment|booking)",
+   "place order and pay",
+   "submit payment"
+  ],
+  "commit_weak": [
+   "(?:buy|purchase|pay|order|book)(?: it| this| now)?",
+   "(?:complete|confirm) (?:order|booking)",
+   "book (?:flight|flights|trip)"
+  ],
+  "commit_attr": "place.?(?:your.?)?order|submit.?order|buy.?now|pay.?now|complete.?purchase|checkout.?submit|purchase.?button|confirm.?purchase",
+  "commit_url": [
+   "/checkout",
+   "/purchase",
+   "/payment",
+   "/buy/",
+   "/order/review",
+   "/place-?order"
+  ],
+  "total_labels": [
+   "order total",
+   "estimated total",
+   "grand total",
+   "total due",
+   "amount due",
+   "trip total",
+   "total(?!\\s*(?:savings|items?|discounts?|tax|before|weight|points))"
+  ],
+  "airports": {
+   "ABQ": "Albuquerque",
+   "ALB": "Albany",
+   "AMA": "Amarillo",
+   "ATL": "Atlanta",
+   "AUA": "Aruba",
+   "AUS": "Austin",
+   "BDL": "Hartford",
+   "BHM": "Birmingham",
+   "BNA": "Nashville",
+   "BOI": "Boise",
+   "BOS": "Boston",
+   "BUF": "Buffalo",
+   "BUR": "Burbank",
+   "BWI": "Baltimore",
+   "BZE": "Belize City",
+   "BZN": "Bozeman",
+   "CHS": "Charleston",
+   "CLE": "Cleveland",
+   "CLT": "Charlotte",
+   "CMH": "Columbus",
+   "COS": "Colorado Springs",
+   "CRP": "Corpus Christi",
+   "CUN": "Cancun",
+   "CVG": "Cincinnati",
+   "DAL": "Dallas Love Field",
+   "DCA": "Washington Reagan",
+   "DEN": "Denver",
+   "DSM": "Des Moines",
+   "DTW": "Detroit",
+   "ECP": "Panama City Beach",
+   "ELP": "El Paso",
+   "EUG": "Eugene",
+   "EWR": "Newark",
+   "FAT": "Fresno",
+   "FLL": "Fort Lauderdale",
+   "GEG": "Spokane",
+   "GRR": "Grand Rapids",
+   "GSP": "Greenville",
+   "HDN": "Hayden",
+   "HNL": "Honolulu",
+   "HOU": "Houston Hobby",
+   "HRL": "Harlingen",
+   "IAD": "Washington Dulles",
+   "IAH": "Houston Bush",
+   "ICT": "Wichita",
+   "IND": "Indianapolis",
+   "ISP": "Long Island",
+   "ITO": "Hilo",
+   "JAN": "Jackson",
+   "JAX": "Jacksonville",
+   "KOA": "Kona",
+   "LAS": "Las Vegas",
+   "LAX": "Los Angeles",
+   "LBB": "Lubbock",
+   "LGA": "New York LaGuardia",
+   "LGB": "Long Beach",
+   "LIH": "Lihue",
+   "LIR": "Liberia",
+   "LIT": "Little Rock",
+   "MAF": "Midland",
+   "MBJ": "Montego Bay",
+   "MCI": "Kansas City",
+   "MCO": "Orlando",
+   "MDW": "Chicago Midway",
+   "MEM": "Memphis",
+   "MHT": "Manchester",
+   "MIA": "Miami",
+   "MKE": "Milwaukee",
+   "MSP": "Minneapolis",
+   "MSY": "New Orleans",
+   "MTJ": "Montrose",
+   "MYR": "Myrtle Beach",
+   "NAS": "Nassau",
+   "OAK": "Oakland",
+   "OGG": "Maui",
+   "OKC": "Oklahoma City",
+   "OMA": "Omaha",
+   "ONT": "Ontario",
+   "ORD": "Chicago O'Hare",
+   "ORF": "Norfolk",
+   "PBI": "West Palm Beach",
+   "PDX": "Portland",
+   "PHL": "Philadelphia",
+   "PHX": "Phoenix",
+   "PIT": "Pittsburgh",
+   "PNS": "Pensacola",
+   "PSP": "Palm Springs",
+   "PUJ": "Punta Cana",
+   "PVD": "Providence",
+   "PVR": "Puerto Vallarta",
+   "RDU": "Raleigh-Durham",
+   "RIC": "Richmond",
+   "RNO": "Reno",
+   "ROC": "Rochester",
+   "RSW": "Fort Myers",
+   "SAN": "San Diego",
+   "SAT": "San Antonio",
+   "SAV": "Savannah",
+   "SBA": "Santa Barbara",
+   "SDF": "Louisville",
+   "SEA": "Seattle",
+   "SFO": "San Francisco",
+   "SJC": "San Jose",
+   "SJD": "Los Cabos",
+   "SJO": "San Jose Costa Rica",
+   "SJU": "San Juan",
+   "SLC": "Salt Lake City",
+   "SMF": "Sacramento",
+   "SNA": "Orange County",
+   "SRQ": "Sarasota",
+   "STL": "St. Louis",
+   "STS": "Santa Rosa",
+   "STT": "St. Thomas",
+   "TPA": "Tampa",
+   "TUL": "Tulsa",
+   "TUS": "Tucson",
+   "VPS": "Destin"
+  },
+  "airports_about": "Airport codes the booking reader knows (Southwest's network, general knowledge) and the city name used in the plain texts. A code that is not listed still works when it is written on the page; only the city-name fallback and the page's airport list need it here."
+ },
+ "stores": {
+  "walmart": {
+   "name": "Walmart",
+   "aliases": [
+    "walmart",
+    "walmart.com",
+    "wal-mart"
+   ],
+   "hosts": [
+    "walmart.com"
+   ],
+   "commit_url": [
+    "^/checkout"
+   ],
+   "total_labels": [
+    "estimated total",
+    "order total"
+   ],
+   "orders_url": "https://www.walmart.com/orders"
+  },
+  "samsclub": {
+   "name": "Sam's Club",
+   "aliases": [
+    "samsclub",
+    "sams club",
+    "sam's club",
+    "sams",
+    "sam's",
+    "samsclub.com"
+   ],
+   "hosts": [
+    "samsclub.com"
+   ],
+   "commit_url": [
+    "^/checkout",
+    "^/pharmacy/checkout"
+   ],
+   "total_labels": [
+    "estimated total",
+    "order total"
+   ],
+   "orders_url": "https://www.samsclub.com/orders"
+  },
+  "amazon": {
+   "name": "Amazon",
+   "aliases": [
+    "amazon",
+    "amazon.com"
+   ],
+   "hosts": [
+    "amazon.com"
+   ],
+   "commit_url": [
+    "^/gp/buy/",
+    "^/checkout/",
+    "^/gp/checkoutportal",
+    "^/cpe/executions"
+   ],
+   "total_labels": [
+    "order total"
+   ],
+   "orders_url": "https://www.amazon.com/gp/css/order-history"
+  },
+  "ralphs": {
+   "name": "Ralphs",
+   "aliases": [
+    "ralphs",
+    "ralph's",
+    "ralphs.com",
+    "kroger"
+   ],
+   "hosts": [
+    "ralphs.com",
+    "kroger.com"
+   ],
+   "commit_url": [
+    "^/checkout"
+   ],
+   "total_labels": [
+    "estimated total",
+    "order total"
+   ],
+   "orders_url": "https://www.ralphs.com/mypurchases"
+  },
+  "southwest": {
+   "name": "Southwest",
+   "aliases": [
+    "southwest",
+    "southwest airlines",
+    "southwest.com",
+    "swa"
+   ],
+   "hosts": [
+    "southwest.com"
+   ],
+   "commit_url": [
+    "^/air/booking/purchase",
+    "^/air/booking/price",
+    "^/purchase"
+   ],
+   "total_labels": [
+    "trip total",
+    "total due"
+   ],
+   "orders_url": "https://www.southwest.com/air/manage-reservation/",
+   "booking": {
+    "kind": "flight",
+    "about": "Read on the final review / purchase page (/air/booking/purchase, /air/booking/price). Unverified: built from general knowledge of Southwest's pages ('Sat, Mar 2', '# 1234', '5:30AM', 'SFO', 'Who's flying?', 'Passenger 1', name boxes on the purchase form, 'Wanna Get Away', 'Trip total'). Every pattern is tolerant and a page that cannot be read refuses.",
+    "airline_code": "WN",
+    "button": "Purchase",
+    "ask_verb": "Book it?",
+    "trips_page_name": "Southwest trips page",
+    "flight_anchor": "(?<![A-Za-z])WN[ \\t ]?|(?<![A-Za-z])(?i:flight)[ \\t ]*(?:#|(?i:no)\\.?|(?i:number))?[ \\t ]*|#[ \\t ]?",
+    "ask_anchor_extra": "(?<![A-Za-z])(?i:southwest)(?:[ \\t ]+(?i:flight))?[ \\t ]*#?[ \\t ]*",
+    "hash_skip_before": "(?:passenger|traveler|traveller|adult|senior|child|seat|item|order|confirmation|account|rewards|member|card|room|gate|unit|apt|suite|step|page|no)\\W*$",
+    "passengers": {
+     "label": "^(?:passengers?|travell?ers?|who['’]?s flying\\??|(?:passenger|traveler|traveller|adult|senior|child)[ \\t ]*#?[ \\t ]*\\d(?:[ \\t ]*\\((?:adult|senior|child|infant)\\))?)[ \\t ]*:?[ \\t ]*(.*)$",
+     "skip_line": "^\\(?(?:adult|senior|child|infant|lap child)\\)?$|^(?:rapid rewards|rr)[ \\t]*(?:#|number)?[ \\t]*[\\d*]+$",
+     "count": [
+      "(?<!\\d)(\\d)[ \\t ]+(?:passengers?|adults?|travell?ers?|seniors?)\\b",
+      "\\b(?:passengers?|travell?ers?|adults?)[ \\t ]*[:(x×][ \\t ]*(\\d)(?!\\d)",
+      "\\b(?:passenger|traveler|traveller|adult)[ \\t ]*#?[ \\t ]*(\\d)(?!\\d)"
+     ],
+     "not_name_words": [
+      "about",
+      "above",
+      "account",
+      "add",
+      "adult",
+      "adults",
+      "amount",
+      "and",
+      "anytime",
+      "arrival",
+      "arrive",
+      "arriving",
+      "as",
+      "at",
+      "away",
+      "back",
+      "bag",
+      "baggage",
+      "bags",
+      "basic",
+      "bird",
+      "birth",
+      "boarding",
+      "book",
+      "booking",
+      "business",
+      "by",
+      "cancel",
+      "card",
+      "change",
+      "check",
+      "checked",
+      "child",
+      "children",
+      "choice",
+      "close",
+      "companion",
+      "conditions",
+      "confirmation",
+      "contact",
+      "continue",
+      "count",
+      "credit",
+      "date",
+      "depart",
+      "departing",
+      "departure",
+      "detail",
+      "details",
+      "done",
+      "due",
+      "early",
+      "earlybird",
+      "edit",
+      "email",
+      "extra",
+      "fare",
+      "fares",
+      "fees",
+      "first",
+      "flight",
+      "flights",
+      "flying",
+      "for",
+      "funds",
+      "gender",
+      "get",
+      "help",
+      "hide",
+      "home",
+      "infant",
+      "info",
+      "information",
+      "insurance",
+      "itinerary",
+      "known",
+      "ktn",
+      "lap",
+      "last",
+      "learn",
+      "less",
+      "log",
+      "manage",
+      "member",
+      "menu",
+      "middle",
+      "mobile",
+      "modify",
+      "more",
+      "my",
+      "name",
+      "names",
+      "new",
+      "next",
+      "nonstop",
+      "number",
+      "of",
+      "on",
+      "optional",
+      "pass",
+      "passenger",
+      "passengers",
+      "payment",
+      "phone",
+      "plus",
+      "policy",
+      "precheck",
+      "preferred",
+      "previous",
+      "price",
+      "prices",
+      "primary",
+      "print",
+      "priority",
+      "privacy",
+      "protection",
+      "purchase",
+      "rapid",
+      "receipt",
+      "redress",
+      "required",
+      "reservation",
+      "return",
+      "returning",
+      "review",
+      "rewards",
+      "same",
+      "save",
+      "seat",
+      "seats",
+      "secure",
+      "select",
+      "senior",
+      "seniors",
+      "share",
+      "show",
+      "sign",
+      "stop",
+      "stops",
+      "subtotal",
+      "summary",
+      "taxes",
+      "terms",
+      "the",
+      "to",
+      "total",
+      "travel",
+      "traveler",
+      "travelers",
+      "traveller",
+      "travellers",
+      "trip",
+      "trips",
+      "tsa",
+      "type",
+      "upgrade",
+      "upgrades",
+      "view",
+      "wanna",
+      "who",
+      "whos",
+      "wifi",
+      "with",
+      "your"
+     ]
+    },
+    "fares": [
+     {
+      "name": "Wanna Get Away Plus",
+      "pattern": "(?i:wanna)[ \\t ]*(?i:get)[ \\t ]*(?i:away)[ \\t ]*(?:\\+|(?i:plus))"
+     },
+     {
+      "name": "Wanna Get Away",
+      "pattern": "(?i:wanna)[ \\t ]*(?i:get)[ \\t ]*(?i:away)(?![ \\t ]*(?:\\+|(?i:plus)))"
+     },
+     {
+      "name": "Anytime",
+      "pattern": "(?<![A-Za-z])(?:Anytime|ANYTIME)(?![A-Za-z])"
+     },
+     {
+      "name": "Business Select",
+      "pattern": "(?<![A-Za-z])(?:Business Select|BUSINESS SELECT)(?![A-Za-z])"
+     },
+     {
+      "name": "Choice Extra",
+      "pattern": "(?<![A-Za-z])(?:Choice Extra|CHOICE EXTRA)(?![A-Za-z])"
+     },
+     {
+      "name": "Choice Preferred",
+      "pattern": "(?<![A-Za-z])(?:Choice Preferred|CHOICE PREFERRED)(?![A-Za-z])"
+     },
+     {
+      "name": "Choice",
+      "pattern": "(?<![A-Za-z])(?:Choice|CHOICE)(?![A-Za-z])(?![ \\t ]+(?:Extra|Preferred|EXTRA|PREFERRED))"
+     },
+     {
+      "name": "Basic",
+      "pattern": "(?<![A-Za-z])(?:Basic|BASIC)(?![A-Za-z])"
+     }
+    ],
+    "refund_terms": [
+     {
+      "pattern": "(?i:fully refundable|refundable to (?:the |your )?original form of payment)",
+      "say": "fully refundable"
+     },
+     {
+      "pattern": "(?i:non-?refundable)[^\\n]{0,120}(?i:flight credit|travel credit|travel funds|future travel)|(?i:flight credit|travel credit|travel funds|future travel)[^\\n]{0,120}(?i:non-?refundable)",
+      "say": "not refundable in cash, refundable as flight credit"
+     },
+     {
+      "pattern": "(?i:flight credit|travel credit|travel funds|future travel)",
+      "say": "refundable as flight credit"
+     },
+     {
+      "pattern": "(?i:non-?refundable)",
+      "say": "not refundable"
+     },
+     {
+      "pattern": "(?<![A-Za-z])(?i:refundable)(?![A-Za-z])",
+      "say": "refundable"
+     }
+    ]
+   }
+  },
+  "trip-hotel": {
+   "name": "Trip.com",
+   "aliases": [],
+   "hosts": [
+    "trip.com"
+   ],
+   "commit_url": [
+    "/hotels?/(?:book|detail[s]?/book)|/booking|/order|/payment"
+   ],
+   "total_labels": [],
+   "orders_url": "https://www.trip.com/"
+  },
+  "opentable": {
+   "name": "OpenTable",
+   "aliases": [],
+   "hosts": [
+    "opentable.com"
+   ],
+   "commit_url": [
+    "/booking|/reservations?/|/confirm|/checkout"
+   ],
+   "total_labels": [],
+   "orders_url": "https://www.opentable.com/"
+  }
+ }
+}

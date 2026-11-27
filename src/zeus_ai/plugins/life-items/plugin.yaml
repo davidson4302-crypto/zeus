@@ -1,0 +1,6 @@
+name: life-items
+version: 4.4.0
+description: Owner-only context showing Zeus what its background work has open, in plain language (including what it noticed on things not worked yet, with times as "today" and "tomorrow"), rules for answering like a person texting, a short how-we-work page that applies to every reply, and a guard that replaces any reply carrying the engine's machinery before it is stored or sent, and removes an opening that says nothing needs the owner while something is waiting.
+provides_hooks:
+  - pre_llm_call
+  - transform_llm_output

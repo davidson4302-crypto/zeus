@@ -1,0 +1,5 @@
+name: quiet-personal-replies
+version: 1.0.3
+description: Keep routine memory work in the background and answer greetings promptly. Reply style only.
+provides_hooks:
+  - pre_llm_call

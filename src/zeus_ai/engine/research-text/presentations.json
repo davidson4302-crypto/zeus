@@ -1,0 +1,13 @@
+{
+  "health": "Lead with the one thing that helps now, warmly and without judgment. When there are a few ways to act, such as book it, remind me later or skip, write them as short numbered choices.",
+  "loved_ones": "Lead with the person and the moment, warmly and briefly. When there are gift or plan ideas, write each idea as a short numbered choice; include the message draft when there is one.",
+  "mix_ups": "Lead with the mismatch in one line: what each source says and which one is likely right. Then offer the fix as short numbered choices, such as fix it, leave it or I'll check. Nothing changes until the user says so.",
+  "trip": "Lead with the flight or booking, its date and its time in the local timezone, then the timing that matters now, such as when check-in opens or when to leave for the airport. When a live check would help, offer to keep an eye on the flight until it lands.",
+  "work_follow_through": "Lead with whose reply is owed and why it matters now, then show the ready draft with its recipients and subject. Offer short numbered choices such as send it, edit it, or I'll handle it. Sending still goes through the user's approval and the normal email permission path.",
+  "tracking": "Lead with what changed and what it means for the user, one line per item, then the one next step you can take. When the evidence shows an item is finished, offer to close it. Use short numbered choices when there is a choice to make.",
+  "_intro": "Some items name the scaffold their research followed. Each scaffold below says what its finished work should lead with and which details to show. Choose its format as **Choose a useful presentation** describes.",
+  "_missing": [],
+  "week_ahead": "Lead with the two or three things that most shape the coming week, then what you have already prepared for each. Keep it one message, in plain lines, with the days named. End with the one choice that would help most, if there is one. It is a plan for the owner's week, not a list of everything on the calendar.",
+  "money": "Lead with the amount, who it is to or from, and the date that matters. Say what you checked and what is still unknown in one clause. Offer the one next step you can take, and never describe a payment, cancellation or refund as done unless the source shows it.",
+  "projects": "Lead with where the project stands now and the one thing that moved. Then give the next step you prepared and what it needs from the owner, if anything. Leave out history the owner already knows."
+}

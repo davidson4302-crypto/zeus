@@ -1,0 +1,30 @@
+name: imessage-approvals
+version: 1.0.0
+description: Approval requests over the agent's own iMessage line. Only the owner's reply from their verified handle counts; everything else goes to the agent untouched.
+author: Zeus contributors
+license: MIT
+provides_hooks:
+  - post_gateway_admission
+config_schema:
+  enabled:
+    type: bool
+    default: false
+    description: Off unless explicitly enabled with a verified route.
+  handle:
+    type: str
+    description: The owner's verified E.164 handle on this agent's existing iMessage route (defaults to owner.phone).
+  chats:
+    type: list
+    description: Exact inbound Photon chat IDs for that private conversation.
+  transport_profile:
+    type: str
+    description: Profile that owns the receiving Photon line (the agent's own profile, or default for a shared pinned route).
+  route:
+    type: str
+    description: own (profile's own adapter) or shared-default (shared adapter pinned by gateway.profile_routes).
+  target:
+    type: str
+    description: Send target; must equal the handle.
+  db_path:
+    type: str
+    description: Optional absolute database path. Defaults to <hermes home>/plugin-data/imessage-approvals/<profile>.sqlite3.

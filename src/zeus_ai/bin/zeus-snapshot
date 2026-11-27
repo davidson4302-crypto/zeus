@@ -1,0 +1,11 @@
+#!/bin/sh
+# zeus-snapshot: every version of Zeus (its Hermes profile): list, compare, restore.
+# Code: tools/zeus_snapshot.py. Store: a local git folder under the Hermes home, never pushed.
+# Find the zeus_ai folder from this script, following symlinks (so a link in ~/.local/bin works).
+SELF="$0"
+while [ -L "$SELF" ]; do
+  LINK=$(readlink "$SELF"); case "$LINK" in /*) SELF="$LINK";; *) SELF="$(dirname "$SELF")/$LINK";; esac
+done
+ROOT="$(cd "$(dirname "$SELF")/.." && pwd)"
+PY="${ZEUS_PYTHON:-python3}"   # Python 3.11 or newer
+exec "$PY" -I "$ROOT/tools/zeus_snapshot.py" "$@"

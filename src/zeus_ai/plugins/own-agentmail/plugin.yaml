@@ -1,0 +1,12 @@
+name: own-agentmail
+version: 1.0.0
+description: Profile-scoped own AgentMail reading and durable sends with exact approvals. No watcher.
+author: Zeus contributors
+license: MIT
+provides_tools:
+  - agentmail_inbox_list
+  - agentmail_message_read
+  - agentmail_send
+  - agentmail_send_status
+provides_hooks:
+  - pre_llm_call

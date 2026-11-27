@@ -1,0 +1,11 @@
+#!/bin/sh
+# zeus-life: how Zeus in the owner's chat sees and closes its own life-pipe items (list, show, done, drop, mute, note, stop, resume).
+# Code: engine/lifecli.py. Set ZEUS_PYTHON to pick the interpreter.
+# Find the zeus_ai folder from this script, following symlinks (so a link in ~/.local/bin works).
+SELF="$0"
+while [ -L "$SELF" ]; do
+  LINK=$(readlink "$SELF"); case "$LINK" in /*) SELF="$LINK";; *) SELF="$(dirname "$SELF")/$LINK";; esac
+done
+ROOT="$(cd "$(dirname "$SELF")/.." && pwd)"
+PY="${ZEUS_PYTHON:-python3}"   # Python 3.11 or newer
+exec "$PY" -I "$ROOT/engine/lifecli.py" "$@"

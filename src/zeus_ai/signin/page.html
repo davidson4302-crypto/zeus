@@ -1,0 +1,215 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="robots" content="noindex,nofollow">
+<meta name="referrer" content="no-referrer">
+<meta name="format-detection" content="telephone=no">
+<title>Sign in for Zeus</title>
+<style nonce="{{NONCE}}">
+:root{--bg:#f6f6f4;--fg:#1c1c1e;--mute:#6b6b70;--card:#fff;--line:#d9d9dc;--acc:#1f6feb;--accfg:#fff;--warn:#9a5b00;--warnbg:#fff4e0;--ok:#16794a}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#111113;--fg:#ececee;--mute:#9a9aa2;--card:#1c1c1f;--line:#34343a;--acc:#4c8dff;--accfg:#fff;--warn:#ffcf7a;--warnbg:#3a2a0c;--ok:#5fd39a}}
+:root[data-theme="dark"]{--bg:#111113;--fg:#ececee;--mute:#9a9aa2;--card:#1c1c1f;--line:#34343a;--acc:#4c8dff;--accfg:#fff;--warn:#ffcf7a;--warnbg:#3a2a0c;--ok:#5fd39a}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--fg);font:17px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;-webkit-text-size-adjust:100%}
+main{max-width:600px;margin:0 auto;padding:12px 16px 28px}
+h1{font-size:22px;margin:18px 0 8px}
+p{margin:8px 0}
+.small{font-size:14px;color:var(--mute)}
+button{font:inherit;border:1px solid var(--line);background:var(--card);color:var(--fg);border-radius:12px;padding:10px 12px;min-height:44px;cursor:pointer;touch-action:manipulation}
+button:active{opacity:.7}
+button.big{display:block;width:100%;font-size:19px;font-weight:600;padding:14px;margin:14px 0 6px;background:var(--acc);color:var(--accfg);border-color:transparent}
+button:disabled{opacity:.5}
+.row{display:flex;gap:8px;margin:8px 0}
+.row>button{flex:1}
+.row input{flex:1;min-width:0;font-size:17px;padding:10px 12px;border:1px solid var(--line);border-radius:12px;background:var(--card);color:var(--fg)}
+.chips button{padding:6px 8px;min-height:36px;font-size:15px}
+.chips button.on{border-color:var(--acc);color:var(--acc);font-weight:600}
+#note{position:sticky;top:0;z-index:2;min-height:22px;font-size:15px;margin:0 0 6px;padding:4px 0;color:var(--mute);background:var(--bg)}
+#note.warn{color:var(--warn);background:var(--warnbg);border-radius:8px;padding:4px 8px}
+#screen{position:relative;border:1px solid var(--line);border-radius:10px;overflow:hidden;background:#fff;touch-action:none;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none}
+#shot{display:block;width:100%;height:auto;touch-action:none;-webkit-user-drag:none;min-height:200px}
+#screen.view{outline:3px solid var(--warn);outline-offset:-3px}
+#result{font-size:17px;margin:6px 0;min-height:24px}
+#result.ok{color:var(--ok);font-weight:600}
+a{color:var(--acc)}
+[hidden]{display:none!important}
+</style>
+</head>
+<body>
+<main id="intro">
+  <h1>Sign in to {{NAME}} for Zeus</h1>
+  <p>This shows Zeus's own Chrome on the {{NAME}} sign-in page. What you tap and type here happens there.</p>
+  <p class="small">Nothing starts until you tap Start.</p>
+  <button id="start" class="big" type="button">Start</button>
+  <p id="startnote" class="small"></p>
+  <p class="small">This link works until {{UNTIL}}.</p>
+</main>
+
+<main id="live" hidden>
+  <div id="note" role="status" aria-live="polite"></div>
+  <div id="screen"><img id="shot" alt="Zeus's Chrome, live" draggable="false"></div>
+  <div class="row">
+    <button id="back" type="button">Back</button>
+    <button id="up" type="button">Scroll up</button>
+    <button id="down" type="button">Scroll down</button>
+  </div>
+  <div class="row chips" role="group" aria-label="What you are typing">
+    <button type="button" data-mode="text" class="on">Name or email</button>
+    <button type="button" data-mode="password">Password</button>
+    <button type="button" data-mode="code">Code</button>
+  </div>
+  <div class="row">
+    <input id="box" type="text" autocomplete="username" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="Type here" aria-label="Text to type into the page">
+    <button id="send" type="button">Type it</button>
+  </div>
+  <div class="row">
+    <button id="enter" type="button">Enter</button>
+    <button id="bksp" type="button">Delete</button>
+    <button id="tab" type="button">Next box</button>
+  </div>
+  <button id="done" class="big" type="button">Done, I'm signed in</button>
+  <div id="result" role="status" aria-live="polite"></div>
+  <p class="small"><a id="sms" href="{{SMS}}">Or text Zeus: "{{SMS_TEXT}}"</a></p>
+  <p class="small">This link works until {{UNTIL}}.</p>
+</main>
+
+<main id="ended" hidden>
+  <h1 id="endtitle"></h1>
+  <p id="endtext"></p>
+</main>
+
+<script nonce="{{NONCE}}">
+(function(){
+'use strict';
+var NOTES={
+  view_only:"Only the sign-in page can be used here.",
+  commit:"That button can't be used from here.",
+  leaves:"That would leave the sign-in page.",
+  commit_page:"That page can't be opened from here.",
+  frame:"That part of the page can't be used from here.",
+  no_back:"Back would leave the sign-in page.",
+  nav_blocked:"That page is outside the sign-in pages, so it was stopped.",
+  popup:"A new window tried to open. It was closed.",
+  dialog:"The page showed a pop-up message. It was closed.",
+  tap_box:"Tap a box in the picture first, then type.",
+  chrome_down:"Zeus's Chrome isn't answering right now. Try again in a minute.",
+  rate:"Too many tries. Wait a few minutes and try again.",
+  moved:"This view moved to another screen.",
+  bad:"That didn't work. Try again."
+};
+var base=location.pathname.replace(/\/+$/,'');
+var $=function(id){return document.getElementById(id)};
+if(!$('sms').getAttribute('href'))$('sms').parentNode.hidden=true;   // no agent number configured
+var viewer=null,seq=0,noteN=0,running=false,queue=Promise.resolve(),down=false,lastMove=0,objUrl=null,noteTimer=null,mode='input',finished=false,doneBusy=false;
+
+function post(path,body){
+  return fetch(base+path,{method:'POST',headers:{'Content-Type':'application/json','X-Handoff':'1'},body:JSON.stringify(body||{}),cache:'no-store',credentials:'omit'})
+    .then(function(r){return r.json().catch(function(){return {}}).then(function(j){j._status=r.status;return j})});
+}
+function sleep(ms){return new Promise(function(r){setTimeout(r,ms)})}
+function show(id){['intro','live','ended'].forEach(function(x){$(x).hidden=(x!==id)})}
+function end(title,text,last){if(finished)return;if(last)finished=true;running=false;viewer=null;$('endtitle').textContent=title;$('endtext').textContent=text;show('ended')}
+function flash(code){
+  var el=$('note');if(!NOTES[code])return;
+  el.textContent=NOTES[code];el.className='warn';
+  clearTimeout(noteTimer);noteTimer=setTimeout(showMode,4000);
+}
+function showMode(){
+  var el=$('note');
+  if(mode==='view'){el.textContent=NOTES.view_only;el.className='warn';$('screen').className='view'}
+  else{el.textContent='Tap the picture to use the page.';el.className='';$('screen').className=''}
+}
+function setMode(m){if(m&&m!==mode){mode=m;clearTimeout(noteTimer);showMode()}}
+
+$('start').addEventListener('click',function(){
+  var b=$('start');b.disabled=true;$('startnote').textContent='Starting…';
+  var w=Math.round(Math.min(document.documentElement.clientWidth||innerWidth,600)-2);
+  var h=Math.round(Math.max(420,Math.min(1100,(innerHeight||700)-300)));
+  post('/start',{w:w,h:h}).then(function(r){
+    b.disabled=false;
+    if(r&&r.v){viewer=r.v;seq=0;noteN=0;mode=r.mode||'input';show('live');showMode();loop();}
+    else if(r._status===404){end("This link isn't working.","It may have ended. Ask Zeus for a new one.")}
+    else{$('startnote').textContent=NOTES[r.note]||NOTES.bad}
+  }).catch(function(){b.disabled=false;$('startnote').textContent=NOTES.chrome_down});
+});
+
+function loop(){
+  if(running)return;running=true;
+  (async function(){
+    var myViewer=viewer;
+    while(running&&viewer===myViewer){
+      var r;
+      try{r=await fetch(base+'/frame?v='+encodeURIComponent(viewer)+'&after='+seq+'&note='+noteN,{cache:'no-store',credentials:'omit'})}
+      catch(e){await sleep(1500);continue}
+      var n=+r.headers.get('X-Note-N')||0,code=r.headers.get('X-Note')||'';
+      if(r.status===200||r.status===204){
+        setMode(r.headers.get('X-Mode'));
+        if(n>noteN){noteN=n;flash(code)}
+      }
+      if(r.status===200){
+        var blob=await r.blob();seq=+r.headers.get('X-Seq')||seq+1;
+        var u=URL.createObjectURL(blob),old=objUrl;objUrl=u;$('shot').src=u;if(old)setTimeout(function(){URL.revokeObjectURL(old)},2000);
+      }else if(r.status===204){}
+      else if(r.status===409){end('Opened somewhere else','This view moved to another screen. You can close this one.');return}
+      else if(r.status===404||r.status===410){if(doneBusy){await sleep(400);continue}end('This link has ended','Ask Zeus for a new one if you still need to sign in.');return}
+      else{await sleep(1500)}
+    }
+  })();
+}
+
+function send(o){
+  if(!viewer)return queue;o.v=viewer;
+  queue=queue.then(function(){return post('/input',o)}).then(function(r){
+    if(!r)return;
+    if(r._status===409){end('Opened somewhere else','This view moved to another screen. You can close this one.');return}
+    if(r._status===404){end('This link has ended','Ask Zeus for a new one if you still need to sign in.');return}
+    if(r.note)flash(r.note);
+  }).catch(function(){});
+  return queue;
+}
+function pt(e){var r=$('shot').getBoundingClientRect();return {x:(e.clientX-r.left)/r.width,y:(e.clientY-r.top)/r.height}}
+var shot=$('shot');
+shot.addEventListener('pointerdown',function(e){e.preventDefault();try{shot.setPointerCapture(e.pointerId)}catch(_){}down=true;var p=pt(e);send({kind:'down',x:p.x,y:p.y})});
+shot.addEventListener('pointermove',function(e){if(!down)return;var t=performance.now();if(t-lastMove<60)return;lastMove=t;var p=pt(e);send({kind:'move',x:p.x,y:p.y})});
+function lift(e){if(!down)return;down=false;var p=pt(e);send({kind:'up',x:p.x,y:p.y})}
+shot.addEventListener('pointerup',lift);
+shot.addEventListener('pointercancel',lift);
+shot.addEventListener('contextmenu',function(e){e.preventDefault()});
+
+$('back').addEventListener('click',function(){send({kind:'back'})});
+$('up').addEventListener('click',function(){send({kind:'scroll',dy:-0.6})});
+$('down').addEventListener('click',function(){send({kind:'scroll',dy:0.6})});
+$('enter').addEventListener('click',function(){send({kind:'key',key:'Enter'})});
+$('bksp').addEventListener('click',function(){send({kind:'key',key:'Backspace'})});
+$('tab').addEventListener('click',function(){send({kind:'key',key:'Tab'})});
+function typeIt(){var b=$('box');var t=b.value;if(!t)return;b.value='';send({kind:'text',text:t})}
+$('send').addEventListener('click',typeIt);
+$('box').addEventListener('keydown',function(e){if(e.key==='Enter'){e.preventDefault();typeIt()}});
+
+var MODES={
+  text:{type:'text',autocomplete:'username',inputmode:'text'},
+  password:{type:'password',autocomplete:'current-password',inputmode:'text'},
+  code:{type:'text',autocomplete:'one-time-code',inputmode:'numeric'}
+};
+Array.prototype.forEach.call(document.querySelectorAll('.chips button'),function(btn){
+  btn.addEventListener('click',function(){
+    Array.prototype.forEach.call(document.querySelectorAll('.chips button'),function(x){x.className=(x===btn?'on':'')});
+    var m=MODES[btn.getAttribute('data-mode')],b=$('box');b.type=m.type;b.setAttribute('autocomplete',m.autocomplete);b.setAttribute('inputmode',m.inputmode);b.focus();
+  });
+});
+
+$('done').addEventListener('click',function(){
+  var b=$('done');b.disabled=true;doneBusy=true;var res=$('result');res.className='';res.textContent='Checking…';
+  post('/done',{v:viewer}).then(function(r){
+    b.disabled=false;doneBusy=false;
+    if(r.closed){res.className='ok';res.textContent=r.words;end('All set',r.words,true);return}
+    if(r._status===404){end('This link has ended','Ask Zeus for a new one if you still need to sign in.');return}
+    res.textContent=r.words||NOTES.bad;
+  }).catch(function(){b.disabled=false;doneBusy=false;res.textContent=NOTES.chrome_down});
+});
+})();
+</script>
+</body>
+</html>

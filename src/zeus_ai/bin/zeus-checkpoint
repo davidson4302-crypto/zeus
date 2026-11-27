@@ -1,0 +1,12 @@
+#!/bin/sh
+# zeus-checkpoint: Zeus's work-and-history backups, the restore drill, and the 30-day cleanup.
+# Code: tools/zeus-checkpoint/zeus_checkpoint.py. Store: checkpoint.store in the config (default <hermes home>/checkpoints/<profile>).
+# Schedule: tools/zeus-checkpoint/SCHEDULE.md.
+# Find the zeus_ai folder from this script, following symlinks (so a link in ~/.local/bin works).
+SELF="$0"
+while [ -L "$SELF" ]; do
+  LINK=$(readlink "$SELF"); case "$LINK" in /*) SELF="$LINK";; *) SELF="$(dirname "$SELF")/$LINK";; esac
+done
+ROOT="$(cd "$(dirname "$SELF")/.." && pwd)"
+PY="${ZEUS_PYTHON:-python3}"   # Python 3.11 or newer
+exec "$PY" -I -B "$ROOT/tools/zeus-checkpoint/zeus_checkpoint.py" "$@"

@@ -1,0 +1,18 @@
+name: zeus-work
+version: 0.2.0
+description: Durable source-bound execution records, verified artifacts and native cron continuation.
+provides_tools:
+  - zeus_work
+provides_hooks:
+  - pre_llm_call
+  - post_llm_call
+  - on_session_end
+  - post_gateway_processing
+  - post_gateway_admission
+  - post_gateway_intake
+  - transform_llm_output
+provides_middleware:
+  - tool_execution
+  - llm_request
+provides_cli_commands:
+  - zeus-work-inspect

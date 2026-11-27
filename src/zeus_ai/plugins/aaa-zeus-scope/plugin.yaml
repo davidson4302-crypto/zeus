@@ -1,0 +1,8 @@
+name: aaa-zeus-scope
+version: 1.0.0
+description: Native current-turn private owner scope for Zeus memory, work and derived context.
+provides_hooks:
+  - pre_llm_call
+  - on_session_end
+  - post_gateway_admission
+  - pre_tool_call

@@ -1,0 +1,447 @@
+#!/usr/bin/env -S python3 -I
+"""zeus-buy: the owner's yes to one order, recorded by code.
+
+  zeus-buy yes <store> <total> "<what>" "<their exact words>" [--item <life key>]
+  zeus-buy yes <booking store> <total> "<what>" "<their exact words>" --date <YYYY-MM-DD> --flights "XX 1234"
+      --from <code> --to <code> --passengers "<full names>" [--time 5:30am] [--fare "<fare name>"]   (a booking store: the trip too)
+  zeus-buy placed <store> <order number>
+  zeus-buy notplaced <store>
+  zeus-buy checked <store> <1|2>   the orders page was read 10 / 30 minutes after the press and the order is not there yet
+  zeus-buy cancel <store>
+  zeus-buy list
+
+`yes` reads the owner's real message (the chat store, read-only) with the life engine's own reader (hisreply.py,
+imported read-only): it must be from the last 15 minutes, a plain yes (typos fine, "ok" never), with nothing taken back
+after it, and it must answer Zeus's ask just before it, which has to name the store and this exact total. "sounds good"
+counts only as that answer. Then one grant is written: this store, up to this total, for 2 hours, one order.
+The purchase lock in the browser (buyfence.py) refuses Place order without such a grant.
+
+Booking stores (a "booking" block in stores.json): the yes needs the trip in the command (dates, flight numbers,
+airports, passenger full names; times and fare when known), and Zeus's ask just before the owner's yes must have named
+every one of them as well as the store and total: a detail the owner never saw cannot be part of their yes. The grant
+then carries the trip, and the lock refuses the press when the page shows anything else. Ordinary stores are judged on
+store and total only.
+
+It reads and writes only buy-grants.json and buy-log.jsonl in the life folder (BUY_LIFE_HOME). Every line it prints is
+plain words the Zeus in the owner's chat can follow and may repeat to them.
+"""
+import sys
+
+sys.dont_write_bytecode = True                         # never write into the engine folder
+
+import importlib.util
+import os
+import re
+import secrets
+import time
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+PACKAGE = HERE.parent                                   # zeus_ai/
+ENGINE_DIR = PACKAGE / 'engine'                         # settings.ENGINE_DIR: where settings.py and the engine live
+if str(ENGINE_DIR) not in sys.path:
+    sys.path.insert(0, str(ENGINE_DIR))
+try:
+    import settings
+    ENGINE_DEFAULT, OWNER_WORD, AGENT_WORD = Path(settings.ENGINE_DIR), settings.OWNER_FIRST, settings.AGENT_NAME
+except Exception:                                       # settings unreadable: the in-tree engine, no names
+    ENGINE_DEFAULT, OWNER_WORD, AGENT_WORD = ENGINE_DIR, 'the owner', 'Zeus'
+FENCE = Path(os.environ.get('BUY_FENCE_PATH') or PACKAGE / 'plugins' / 'purchase-lock' / 'buyfence.py')
+ENGINE = Path(os.environ.get('LIFE_ENGINE_DIR') or ENGINE_DEFAULT)
+RECENT = 15 * 60
+USAGE = ('Usage: zeus-buy yes <store> <total> "<what>" "<their exact words>" [--item <life key>] (a booking store '
+         'also needs: --date <YYYY-MM-DD> --flights "<flight number>" --from <code> --to <code> --passengers "<full names>" '
+         '[--time <5:30am>] [--fare "<fare name>"]) | zeus-buy placed <store> <order number> | zeus-buy notplaced <store> | '
+         'zeus-buy cancel <store> | zeus-buy list')
+FLAGS = {'--item': 'item', '--date': 'date', '--dates': 'date', '--flights': 'flights', '--flight': 'flights', '--from': 'from',
+         '--to': 'to', '--passengers': 'passengers', '--passenger': 'passengers', '--time': 'time', '--times': 'time',
+         '--fare': 'fare'}
+TRIP_FLAGS = ('date', 'flights', 'from', 'to', 'passengers', 'time', 'fare')
+# "sounds good" IS a yes when it answers the ask Zeus just made. Same words as the engine's agrees(); used only when
+# the imported hisreply has no agrees() of its own. A trailing thank-you or name (the owner's or the agent's) is fine.
+_NAMES = '|'.join(re.escape(w.lower()) for w in {str(OWNER_WORD), str(AGENT_WORD), 'zeus'} if w and w != 'the owner')
+AGREE = re.compile(r"(?:(?:ok|okay|alright|cool|oh|ah)\s+)?(?:(?:that|this|it|all that|that all)\s+)?sounds\s+good(?:\s+to\s+me)?"
+                   r"(?:\s+(?:thanks|thank you|thx|ty" + ('|' + _NAMES if _NAMES else '') + r"))?")
+
+
+def load(name, path):
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+F = load('_zeus_buy_fence', FENCE)
+
+
+def engine():
+    if str(ENGINE) not in sys.path:
+        sys.path.insert(0, str(ENGINE))
+    import chats as C
+    import hisreply as H
+    return C, H
+
+
+def say(text, code=0):
+    print(text)
+    return code
+
+
+def agrees(H, text) -> bool:
+    fn = getattr(H, 'agrees', None)
+    if callable(fn):
+        return bool(fn(text))
+    return bool(AGREE.fullmatch(' '.join(H.tokens(text))))
+
+
+def ask_line(st, sid, c, what, want=None):
+    if want:
+        B = F.booking_module()
+        return '"' + B.ask_line(st.booking(sid), st.name(sid), want, c) + '"'
+    return f'"{st.name(sid)} order is {F.dollars(c)} for {what}, place it?"'
+
+
+def split_flags(args):
+    """-> (positional args, {flag: [values]}, problem or None). --flag value and --flag=value both work."""
+    pos, opts, i = [], {}, 0
+    while i < len(args):
+        a = str(args[i])
+        if a.startswith('--'):
+            name, eq, val = a.partition('=')
+            key = FLAGS.get(name)
+            if key is None:
+                return None, None, f'unknown option {name}'
+            if not eq:
+                if i + 1 >= len(args):
+                    return None, None, f'{name} needs a value'
+                i += 1
+                val = str(args[i])
+            opts.setdefault(key, []).append(val)
+        else:
+            pos.append(a)
+        i += 1
+    return pos, opts, None
+
+
+def chat_store(life):
+    """The chat store to read the owner's messages from. A sandbox life folder must name its own pretend store."""
+    store = os.environ.get('LIFE_CHAT_DB') or None
+    if store is None and Path(life).resolve() != F.LIVE_LIFE.resolve():
+        raise RuntimeError('a sandbox has no chat store of its own (set LIFE_CHAT_DB)')
+    return store
+
+
+def amounts_in(text) -> set:
+    found = {F.cents(m.group(1)) for m in F.MONEY.finditer(text or '')}
+    found |= {F.cents(m.group(0)) for m in re.finditer(r'(?<![\d.$])\d{1,6}\.\d{2}(?!\d)', text or '')}
+    return {c for c in found if c}
+
+
+def names_store(st, sid, text) -> bool:
+    words = ' ' + F.norm(text) + ' '
+    return any(' ' + w + ' ' in words for w in st.words_for(sid))
+
+
+def cmd_yes(st, grants, life, args):
+    args, opts, problem = split_flags(args)
+    if problem or len(args) != 4:
+        return say(USAGE, 2)
+    item = (opts.pop('item', None) or [None])[-1]
+    store, total, what, words = args
+    sid = st.for_name(store)
+    if sid is None:
+        known = ', '.join(st.stores)
+        return say(f'Not recorded. The purchase lock does not know a store called "{store}". Stores it knows: {known}. '
+                   'Nothing can be bought anywhere else; tell the owner in one line.', 3)
+    c = F.cents(total)
+    if not c:
+        return say(f'Not recorded. "{total}" is not an amount. Give the total like 42.17 (dollars and cents).', 3)
+    what = ' '.join(str(what).split())
+    if not what:
+        return say('Not recorded. Say what the order is for, in a few words, for example "paper towels, dish soap".', 3)
+    trip = {k: v for k, v in opts.items() if k in TRIP_FLAGS}
+    want, cfg, B = None, None, None
+    if st.is_booking(sid):
+        try:
+            B, cfg = F.booking_module(), st.booking(sid)
+        except Exception as error:
+            return say(f'The booking check for {st.name(sid)} could not start ({type(error).__name__}), so nothing was recorded. '
+                       'Tell the owner in one line that the purchase lock needs a look.', 1)
+        want, problems = B.validate(cfg, trip, B.today())
+        if problems:
+            return say(f'Not recorded. A {st.name(sid)} yes is for one exact trip, so the command needs the trip too: '
+                       f'{"; ".join(problems)}. Use: zeus-buy yes {sid} {F.amount(c)} "{what}" "<their exact words>" '
+                       f'{B.cmd_flags(cfg, {})} (add --time and --fare when you know them; several values go in one '
+                       'quoted list, like --flights "XX 1234, XX 5678").', 3)
+    elif trip:
+        booking = ', '.join(s['name'] for s in st.stores.values() if s.get('booking')) or 'none'
+        return say(f'Not recorded. Trip details (--date, --flights, --from, --to, --passengers, --time, --fare) are only for '
+                   f'booking stores ({booking}). For {st.name(sid)} run: zeus-buy yes {sid} {F.amount(c)} "{what}" '
+                   '"<their exact words>"', 2)
+    now = time.time()
+    try:
+        C, H = engine()
+        db = chat_store(life)
+        his = [m for m in C.messages(now - RECENT, path=db) if m['who'] == 'owner']
+    except Exception as error:
+        return say(f'The owner\'s messages could not be read just now ({type(error).__name__}: {error}), so nothing was recorded. '
+                   'Try once more in a minute.', 1)
+    example = ask_line(st, sid, c, what, want)
+    if not his:
+        return say('Not recorded. There is no message from the owner in the last 15 minutes, so there is no yes to record. Ask them '
+                   f'in one line: {example}', 3)
+    quote = H._flat(words)
+    hits = [m for m in his if quote and quote in H._flat(m['text'])]
+    # The quote only helps pick among the owner's recent messages. What they really wrote decides, never the quote.
+    found = hits[-1] if hits else his[-1]
+    for m in his:
+        if (m['at'], m['id']) > (found['at'], found['id']):
+            later = H.read(m['text'])
+            if later['answer'] in ('no', 'changed') or later['why'] == getattr(H, 'UNDECIDED', 'the owner has not decided yet'):
+                return say(f'Not recorded. After that message they wrote: "{m["text"][:200]}". So their yes does not stand. Go by their '
+                           'newest message.', 3)
+    # The ask the owner answered: Zeus's words after their previous message and before this one, at most 15 minutes before it.
+    window = C.messages(float(found['at']) - RECENT, until=float(found['at']) + 1, path=db)
+    before = [m for m in window if (m['at'], m['id']) < (found['at'], found['id'])]
+    last_his = max([i for i, m in enumerate(before) if m['who'] == 'owner'], default=-1)
+    ask = ' '.join(m['text'] for m in before[last_his + 1:] if m['who'] == 'zeus')
+    missing = []
+    if not names_store(st, sid, ask):
+        missing.append(st.name(sid))
+    if c not in amounts_in(ask):
+        missing.append(F.dollars(c))
+    if want:                                    # every trip detail the yes would bind must be in the ask it answered
+        missing += B.missing_in_ask(cfg, want, ask, B.today())
+    if missing:
+        if want:
+            said = 'You did not ask them anything just before their message' if not ask.strip() else \
+                f'Your message just before theirs did not say {B.and_join(missing)}'
+            return say(f'Not recorded. Their yes has to answer your ask that names the store, the total and the trip (date, '
+                       f'flights, airports, passengers). {said}. Ask them in one line: {example} and run this again with their '
+                       'answer.', 3)
+        said = 'You did not ask them anything just before their message' if not ask.strip() else \
+            f'Your message just before theirs did not say {" and ".join(missing)}'
+        return say(f'Not recorded. Their yes has to answer your ask that names the store and the total. {said}. Ask them in one '
+                   f'line: {example} and run this again with their answer.', 3)
+    reading = H.read(found['text'])
+    own = H.vocabulary(ask, what, sorted(st.words_for(sid)), ['order', 'place', 'buy', 'purchase', 'checkout', 'cart'],
+                       ['book', 'booking', 'flight', 'flights', 'trip', 'ticket', 'tickets'] if want else [],
+                       list((want or {}).get('passengers') or []), [want.get('fare') or ''] if want else [])
+    if reading['answer'] in ('yes', 'no'):
+        reading = H.bind(reading, own)
+    if reading['answer'] == 'other' and agrees(H, found['text']):
+        reading = dict(reading, answer='yes', why='they said "sounds good" right after you asked')
+    if reading['answer'] == 'no':
+        return say(f'Not recorded. Their message ("{found["text"][:200]}") is a no. Nothing will be bought. Tell them in one line '
+                   'that you left it.', 3)
+    if reading['answer'] == 'changed':
+        why = '' if 'change or a condition' in str(reading['why']) else f' ({reading["why"]})'
+        return say(f'Not recorded. Their message ("{found["text"][:200]}") has a change or a condition in it{why}, so it is not a '
+                   'plain yes. Do what they asked, then ask again with the new store and total.', 3)
+    if reading['answer'] != 'yes':
+        return say(f'Not recorded. Their message ("{found["text"][:200]}") is not a plain yes: {reading["why"]}. "ok" or a '
+                   'thank-you is not a yes. Nothing can be bought until they say yes; if it is a question, answer it.', 3)
+    try:
+        with grants.locked():
+            data = grants.load()
+            grants.sweep(data, now)
+            rows = data['grants']
+            used = [g for g in rows if str(g.get('his_message_id')) == str(found['id'])]
+            if used:
+                g = used[-1]
+                grants.save(data)
+                return say(f'Not recorded. That same message of theirs already approved another order ({st.name(g["store"])}, up to '
+                           f'{F.dollars(int(g["total_cents"]))}, {g.get("what")}). One yes covers one order. Ask them about '
+                           'this one in its own line.', 3)
+            open_row = F.latest(rows, sid, F.UNSETTLED)
+            if open_row:
+                grants.save(data)
+                return say(f'Not recorded. The last {st.name(sid)} order (up to {F.dollars(int(open_row["total_cents"]))}, '
+                           f'{open_row.get("what")}) was pressed at {F.clock(open_row.get("pressed_at") or open_row.get("at"))} '
+                           'and is not settled yet. ' + F.settle_rule(st, sid).replace('Never press Place order again. ', '')
+                           + ' Then run this again.', 3)
+            for g in rows:
+                if g.get('store') == sid and g.get('state') == 'approved':
+                    grants.move(g, 'cancelled', 'zeus-buy', 'replaced by a newer yes', now)
+            gid = 'g-' + time.strftime('%Y%m%d-%H%M%S', time.localtime(now)) + '-' + secrets.token_hex(2)
+            g = {'id': gid, 'store': sid, 'total_cents': c, 'what': what[:200], 'item_key': item,
+                 'his_message_id': found['id'], 'his_words': str(found['text'])[:300], 'quoted_words': str(words)[:300],
+                 'ask': ask[:400], 'at': now, 'expires_at': now + F.GRANT_SECONDS, 'state': 'approved', 'history': []}
+            if want:
+                g['booking'] = want
+            grants.move(g, 'approved', 'zeus-buy', reading['why'], now)
+            rows.append(g)
+            grants.save(data)
+    except Exception as error:
+        return say(f'The grants file could not be written just now ({type(error).__name__}), so nothing was recorded. Try once '
+                   'more in a minute.', 1)
+    F.write_log(life, {'action': 'grant', 'verdict': 'approved', 'grant': gid, 'store': sid, 'grant_total_cents': c,
+                       'his_message_id': found['id'], 'why': reading['why'], **({'booking': want} if want else {})})
+    orders = st.orders_url(sid)
+    if want:
+        btn = cfg['button']
+        return say(f'Recorded. The owner\'s yes covers one {st.name(sid)} trip up to {F.dollars(c)}: {B.describe(cfg, want)}. It '
+                   f'holds until {F.clock(now + F.GRANT_SECONDS)}. Now press {btn} once with click_element on the button; the '
+                   'purchase lock checks that the page shows this same trip (date, flights, airports, passengers) and total. '
+                   f'After it, read the confirmation and run: zeus-buy placed {sid} <confirmation number>. If anything is '
+                   f'unclear, open {orders} and read it; never press {btn} again.')
+    return say(f'Recorded. The owner\'s yes covers one {st.name(sid)} order up to {F.dollars(c)} ({what}) until '
+               f'{F.clock(now + F.GRANT_SECONDS)}. Now press Place order once with click_element on the button. After it, '
+               f'read the confirmation and run: zeus-buy placed {sid} <order number>. If anything is unclear, open {orders} '
+               'and read it; never press Place order again.')
+
+
+def cmd_settle(st, grants, life, verb, args):
+    if (verb == 'placed' and len(args) != 2) or (verb != 'placed' and len(args) != 1):
+        return say(USAGE, 2)
+    sid = st.for_name(args[0])
+    if sid is None:
+        return say(f'Unknown store "{args[0]}". Stores the purchase lock knows: {", ".join(st.stores)}.', 3)
+    now = time.time()
+    with grants.locked():
+        data = grants.load()
+        grants.sweep(data, now)
+        if verb == 'placed':
+            number = ' '.join(str(args[1]).split())
+            if len(re.findall(r'[A-Za-z0-9]', number)) < 4 or len(number) > 60:
+                grants.save(data)
+                return say(f'Not recorded. "{number}" does not look like an order or confirmation number. Copy it from the '
+                           f'confirmation page or the {st.name(sid)} orders page.', 3)
+            g = F.latest(data['grants'], sid, F.UNSETTLED + ('approved',))
+            if g is None:
+                grants.save(data)
+                return say(f'There is no open {st.name(sid)} order to mark as placed. Nothing was changed.', 3)
+            note = 'confirmed on the store' if g['state'] != 'approved' else 'marked placed before Place order was pressed through the lock'
+            grants.move(g, 'placed', 'zeus-buy', note, now, order_number=number)
+            grants.save(data)
+            text = (f'Recorded: the {st.name(sid)} order is placed (order {number}, the owner\'s yes up to '
+                    f'{F.dollars(int(g["total_cents"]))}, {g.get("what")}). Tell the owner in one line, with the order number and total.')
+        elif verb == 'notplaced':
+            g = F.latest(data['grants'], sid, F.UNSETTLED)
+            if g is None:
+                a = F.latest(data['grants'], sid, ('approved',))
+                grants.save(data)
+                if a:
+                    return say(f'Place order was never pressed for the {st.name(sid)} yes (up to {F.dollars(int(a["total_cents"]))}). '
+                               f'Nothing to mark. If the owner no longer wants it, run: zeus-buy cancel {sid}.', 3)
+                return say(f'There is no pressed {st.name(sid)} order to mark. Nothing was changed.', 3)
+            grants.move(g, 'not_placed', 'zeus-buy', 'the orders page does not show it', now)
+            grants.save(data)
+            text = (f'Recorded: the {st.name(sid)} order did not go through, and nothing more will be pressed for that yes. Tell '
+                    'the owner in one line. If they still want it, ask them again with the total; their new yes makes a new grant.')
+        else:                                           # cancel
+            g = F.latest(data['grants'], sid, F.OPEN)
+            if g is None:
+                grants.save(data)
+                return say(f'There is no open {st.name(sid)} yes to cancel. Nothing was changed.', 0)
+            if g['state'] != 'approved':
+                grants.save(data)
+                return say(f'Not cancelled. Place order was already pressed for this {st.name(sid)} order at '
+                           f'{F.clock(g.get("pressed_at") or g.get("at"))}, so it may have gone through. '
+                           + F.settle_rule(st, sid), 3)
+            grants.move(g, 'cancelled', 'zeus-buy', 'cancelled before Place order was pressed', now)
+            grants.save(data)
+            text = f'Cancelled. The owner\'s yes for {st.name(sid)} (up to {F.dollars(int(g["total_cents"]))}) no longer counts. Nothing was bought.'
+    F.write_log(life, {'action': verb, 'verdict': 'recorded', 'store': sid, 'grant': g['id'], 'state': g['state']})
+    return say(text)
+
+
+def cmd_list(st, grants):
+    now = time.time()
+    data = grants.current(now)
+    rows = [g for g in data['grants'] if g.get('state') in F.OPEN or now - float(g.get('at') or 0) < 7 * 86400]
+    if not rows:
+        return say('No purchase yeses in the last 7 days.')
+    lines = []
+    for g in sorted(rows, key=lambda r: float(r.get('at') or 0)):
+        state = g['state']
+        extra = {'approved': f'waiting to be placed, the yes holds until {F.clock(g.get("expires_at"))}',
+                 'ordering': f'Place order being pressed since {F.clock(g.get("pressed_at"))}',
+                 'placed_unconfirmed': f'Place order pressed at {F.clock(g.get("pressed_at"))}, not yet read on the store',
+                 'unknown': 'pressed, outcome unknown: read the orders page',
+                 'placed': f'placed, order {g.get("order_number")}',
+                 'not_placed': 'did not go through', 'expired': 'the yes ran out', 'cancelled': 'cancelled'}.get(state, state)
+        trip = ''
+        if g.get('booking'):
+            try:
+                trip = f' [{F.booking_module().describe(st.booking(g["store"]), g["booking"])}]'
+            except Exception:
+                trip = ' [trip details recorded]'
+        lines.append(f'{st.name(g["store"])}: up to {F.dollars(int(g["total_cents"]))} ({g.get("what")}){trip}, asked '
+                     f'{F.clock(g.get("at"))}, their words "{str(g.get("his_words") or "")[:60]}": {extra}.')
+    return say('\n'.join(lines))
+
+
+CHECK_MARKS = (10 * 60, 30 * 60)   # settle timing: look at the orders page ~10 and ~30 minutes after the press
+
+
+def due_checks(data: dict, now: float) -> list:
+    """(grant, check number) for every pressed-but-unsettled order whose 10- or 30-minute look is due and not done."""
+    out = []
+    for g in data.get('grants', []):
+        if g.get('state') not in ('placed_unconfirmed', 'unknown'):
+            continue
+        pressed = float(g.get('pressed_at') or g.get('at') or 0)
+        done = set(g.get('checks_done') or [])
+        for n, mark in enumerate(CHECK_MARKS, 1):
+            if now - pressed >= mark and n not in done:
+                out.append((g, n))
+    return out
+
+
+def cmd_checked(st, grants, life, args):
+    """zeus-buy checked <store> <1|2>: the orders page was read and the order is not there (yet)."""
+    if len(args) != 2 or args[1] not in ('1', '2'):
+        return say('Use: zeus-buy checked <store> <1 or 2>', 2)
+    sid = st.for_name(args[0])
+    if sid is None:
+        return say(f'Unknown store "{args[0]}". Stores the purchase lock knows: {", ".join(st.stores)}.', 3)
+    n, now = int(args[1]), time.time()
+    with grants.locked():
+        data = grants.load()
+        g = F.latest(data['grants'], sid, ('placed_unconfirmed', 'unknown'))
+        if g is None:
+            grants.save(data)
+            return say(f'There is no unconfirmed {st.name(sid)} order. Nothing was changed.', 3)
+        g['checks_done'] = sorted(set(g.get('checks_done') or []) | {n})
+        g.setdefault('history', []).append({'state': g['state'], 'at': now, 'by': 'zeus-buy', 'note': f'orders page check {n}: not there yet'})
+        grants.save(data)
+    F.write_log(life, {'action': 'checked', 'verdict': 'recorded', 'store': sid, 'grant': g['id'], 'check': n})
+    if n == 1:
+        return say('Recorded. Nothing to tell the owner yet; the order gets one more look in about 20 minutes. Reply [SILENT].')
+    return say(f'Recorded. Tell the owner in one line: the {st.name(sid)} order ({g.get("what")}, up to '
+               f'{F.dollars(int(g["total_cents"]))}) is not on the orders page 30 minutes after it was placed, so it may not have '
+               'gone through; they should look for a confirmation email before anything is tried again. Never press Place order again '
+               f'for it. If it shows up later, run: zeus-buy placed {sid} <order number>.')
+
+
+def main(argv):
+    if not argv or argv[0] in ('-h', '--help', 'help'):
+        return say(USAGE, 0 if argv else 2)
+    life = F.life_home()
+    try:
+        st = F.Stores()
+    except Exception as error:
+        return say(f'The store list could not be read ({type(error).__name__}), so nothing was recorded. Tell the owner in one line '
+                   'that the purchase lock needs a look.', 1)
+    grants = F.Grants(life)
+    verb, args = argv[0], argv[1:]
+    try:
+        if verb == 'yes':
+            return cmd_yes(st, grants, life, args)
+        if verb in ('placed', 'notplaced', 'cancel'):
+            return cmd_settle(st, grants, life, verb, args)
+        if verb == 'checked':
+            return cmd_checked(st, grants, life, args)
+        if verb == 'list':
+            return cmd_list(st, grants)
+    except TimeoutError:
+        return say('The grants file is busy (a browser step is using it). Nothing was changed. Try once more in a few seconds.', 1)
+    except ValueError as error:
+        return say(f'The grants file could not be read ({error}). Nothing was changed. Tell the owner in one line that the purchase '
+                   'lock needs a look.', 1)
+    return say(USAGE, 2)
+
+
+if __name__ == '__main__':
+    sys.exit(main(sys.argv[1:]))

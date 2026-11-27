@@ -1,0 +1,55 @@
+{
+ "about": "The sites the owner is signed in to in Zeus's own Chrome, for signedin.py. Every entry below is a PLACEHOLDER: nobody has looked at the real pages yet. A placeholder entry is never read and always answers 'unknown'. To fill one in: open the site's account page in Zeus's Chrome while signed in and copy (1) its exact address into account_url, (2) two or three short pieces of text that only a signed-in page shows into signed_in; then open the same address signed out (a private window is fine) and copy (3) the address it lands on, or the part of it that says sign-in, into signed_out_url and (4) one or two pieces of text only the sign-in page shows into signed_out. Then delete the placeholder line. 'hosts' and 'match' are real already.",
+ "sites": {
+  "walmart": {
+   "name": "Walmart",
+   "match": ["walmart"],
+   "hosts": ["walmart.com"],
+   "placeholder": true,
+   "account_url": "PLACEHOLDER: address of the Walmart account page",
+   "signed_in": ["PLACEHOLDER: text only a signed-in Walmart account page shows"],
+   "signed_out": ["PLACEHOLDER: text only the Walmart sign-in page shows"],
+   "signed_out_url": ["PLACEHOLDER: the part of the address that says it is the Walmart sign-in page"]
+  },
+  "amazon": {
+   "name": "Amazon",
+   "match": ["amazon"],
+   "hosts": ["amazon.com"],
+   "placeholder": true,
+   "account_url": "PLACEHOLDER: address of the Amazon account page",
+   "signed_in": ["PLACEHOLDER: text only a signed-in Amazon account page shows"],
+   "signed_out": ["PLACEHOLDER: text only the Amazon sign-in page shows"],
+   "signed_out_url": ["PLACEHOLDER: the part of the address that says it is the Amazon sign-in page"]
+  },
+  "samsclub": {
+   "name": "Sam's Club",
+   "match": ["sam's club", "sams club", "samsclub"],
+   "hosts": ["samsclub.com"],
+   "placeholder": true,
+   "account_url": "PLACEHOLDER: address of the Sam's Club account page",
+   "signed_in": ["PLACEHOLDER: text only a signed-in Sam's Club account page shows"],
+   "signed_out": ["PLACEHOLDER: text only the Sam's Club sign-in page shows"],
+   "signed_out_url": ["PLACEHOLDER: the part of the address that says it is the Sam's Club sign-in page"]
+  },
+  "southwest": {
+   "name": "Southwest",
+   "match": ["southwest"],
+   "hosts": ["southwest.com"],
+   "placeholder": true,
+   "account_url": "PLACEHOLDER: address of the Southwest account page",
+   "signed_in": ["PLACEHOLDER: text only a signed-in Southwest account page shows"],
+   "signed_out": ["PLACEHOLDER: text only the Southwest sign-in page shows"],
+   "signed_out_url": ["PLACEHOLDER: the part of the address that says it is the Southwest sign-in page"]
+  },
+  "ralphs": {
+   "name": "Ralphs",
+   "match": ["ralphs"],
+   "hosts": ["ralphs.com"],
+   "placeholder": true,
+   "account_url": "PLACEHOLDER: address of the Ralphs account page",
+   "signed_in": ["PLACEHOLDER: text only a signed-in Ralphs account page shows"],
+   "signed_out": ["PLACEHOLDER: text only the Ralphs sign-in page shows"],
+   "signed_out_url": ["PLACEHOLDER: the part of the address that says it is the Ralphs sign-in page"]
+  }
+ }
+}

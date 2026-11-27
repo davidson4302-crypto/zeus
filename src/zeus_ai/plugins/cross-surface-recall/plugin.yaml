@@ -1,0 +1,5 @@
+name: cross-surface-recall
+version: 1.0.0
+description: Read-only. Before each turn, show the agent what it did and was told in its OTHER recent conversations (iMessage/Slack/terminal shared chat, email, Claude/Codex hand-offs, scheduled jobs), so every surface shares one memory.
+provides_hooks:
+  - pre_llm_call

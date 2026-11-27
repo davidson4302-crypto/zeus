@@ -1,0 +1,5 @@
+name: outbound-message-context
+version: 1.0.0
+description: Read-only, recipient-scoped context for this agent's native outbound message receipts.
+provides_hooks:
+  - pre_llm_call

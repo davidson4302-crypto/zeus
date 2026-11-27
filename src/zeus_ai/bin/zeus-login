@@ -1,0 +1,51 @@
+#!/bin/bash
+# zeus-login: the owner's store logins for Zeus's self-sign-in, kept in the Mac login Keychain.
+# The password is typed into macOS's own hidden prompt (security -w) and goes straight into the Keychain: it is never
+# echoed, written to a file, logged, or seen by any agent. Zeus reads one only at the moment it signs back in to that
+# store (stores with no phone code; never a texted code without the owner).
+#   zeus-login all              ask for every store in turn (Enter on an empty email skips a store)
+#   zeus-login add <store>      add or replace one store's login
+#   zeus-login list             which stores have a login saved (shows the email only, never the password)
+#   zeus-login remove <store>   delete one store's login
+# Stores: the list in ZEUS_STORES_RELOGIN (space separated), else the default below. Keep it the same as the
+# config key stores.relogin, which engine/relogin.py reads.
+set -u
+# Hermes profiles remap HOME; name the real login keychain so agents find these items.
+KC="$(dscl . -read "/Users/$(id -un)" NFSHomeDirectory | sed 's/^NFSHomeDirectory: //')/Library/Keychains/login.keychain-db"
+STORES="${ZEUS_STORES_RELOGIN:-walmart amazon samsclub southwest ralphs}"
+known() { case " $STORES " in *" $1 "*) [ -n "$1" ];; *) return 1;; esac; }
+name() { known "$1" || return 1
+  case "$1" in walmart) echo "Walmart";; amazon) echo "Amazon";; samsclub) echo "Sam's Club";;
+  southwest) echo "Southwest";; ralphs) echo "Ralphs";; *) echo "$1";; esac; }
+svc() { echo "zeus-login:$1"; }
+
+add() {
+  local s="$1" n acct
+  n=$(name "$s") || { echo "Unknown store: $s (use one of: $STORES)"; return 1; }
+  echo; echo "== $n =="
+  read -r -p "Email or username for $n (press Enter to skip): " acct
+  [ -z "$acct" ] && { echo "Skipped $n."; return 0; }
+  echo "Now type the $n password. Nothing shows while you type; that is normal. You will type it twice."
+  if security add-generic-password -U -a "$acct" -s "$(svc "$s")" -l "Zeus login: $n" \
+       -j "For Zeus's self-sign-in. Remove: zeus-login remove $s" -w; then
+    echo "Saved $n."
+  else
+    echo "Not saved (the two passwords may not have matched). Run: zeus-login add $s"
+  fi
+}
+
+list() {
+  for s in $STORES; do
+    a=$(security find-generic-password -s "$(svc "$s")" "$KC" 2>/dev/null | sed -n 's/.*"acct"<blob>="\(.*\)"/\1/p')
+    printf '%-11s %s\n' "$(name "$s")" "${a:-(none saved)}"
+  done
+}
+
+case "${1:-}" in
+  all)    echo "Zeus store logins. Your passwords go straight into your Mac's Keychain; no one sees them."
+          for s in $STORES; do add "$s"; done; echo; list; echo; echo "All done. You can close this window." ;;
+  add)    add "${2:-}" ;;
+  list)   list ;;
+  remove) security delete-generic-password -s "$(svc "${2:-}")" >/dev/null 2>&1 && echo "Removed ${2:-}." || echo "Nothing saved for ${2:-}." ;;
+  *)      sed -n '2,11p' "$0" ;;
+esac

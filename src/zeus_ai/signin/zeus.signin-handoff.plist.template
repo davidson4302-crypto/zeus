@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Template, not installed. Zeus phone sign-in handoff server, 127.0.0.1:8851 only.
+     The installer replaces each @PLACEHOLDER@: @PYTHON@ (Python 3.11+), @ZEUS_DIR@ (the zeus_ai package folder),
+     @LIFE_HOME@ (settings.LIFE_HOME), @LOG_DIR@ (for example ~/Library/Logs, written out in full).
+     Put an HTTPS reverse proxy or tunnel in front of the port and set signin.public_base in the config. -->
+<plist version="1.0"><dict>
+ <key>Label</key><string>ai.zeus.signin-handoff</string>
+ <key>ProgramArguments</key><array>
+  <string>@PYTHON@</string>
+  <string>-I</string>
+  <string>@ZEUS_DIR@/signin/handoff_server.py</string>
+  <string>--port</string><string>8851</string>
+ </array>
+ <key>EnvironmentVariables</key><dict>
+  <key>LIFE_HOME</key><string>@LIFE_HOME@</string>
+  <key>HANDOFF_CDP</key><string>http://127.0.0.1:9333</string>
+ </dict>
+ <key>RunAtLoad</key><true/>
+ <key>KeepAlive</key><true/>
+ <key>ThrottleInterval</key><integer>10</integer>
+ <key>ProcessType</key><string>Background</string>
+ <key>StandardOutPath</key><string>@LOG_DIR@/zeus-signin-handoff.log</string>
+ <key>StandardErrorPath</key><string>@LOG_DIR@/zeus-signin-handoff.log</string>
+</dict></plist>

@@ -1,0 +1,6 @@
+name: agentmail
+label: AgentMail email
+kind: platform
+version: 0.1.3
+description: Wake an existing Hermes profile from its own AgentMail inbox.
+requires_env: []
