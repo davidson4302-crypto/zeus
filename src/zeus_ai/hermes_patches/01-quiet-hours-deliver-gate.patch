@@ -1,8 +1,8 @@
 diff --git a/cron/delivery_queue.py b/cron/delivery_queue.py
-index b7aba54f9be98ddfe447dc57550aa0fa942acc9d..a1afd892a131114ea9a611c78a4e57fb6de62232 100644
+index fbabf1f0afe91a6e2ecb34f4232e309a6eb3a926..5d2701d7d503c676364691072665bbc3734e177b 100644
 --- a/cron/delivery_queue.py
 +++ b/cron/delivery_queue.py
-@@ -11,6 +11,7 @@ from __future__ import annotations
+@@ -11,9 +11,11 @@ from __future__ import annotations
  
  import json
  import logging
@@ -10,8 +10,64 @@ index b7aba54f9be98ddfe447dc57550aa0fa942acc9d..a1afd892a131114ea9a611c78a4e57fb
  import os
  import sqlite3
  import threading
-@@ -387,16 +388,172 @@ def recover_abandoned() -> int:
-     return changed
++import time
+ import uuid
+ from contextlib import contextmanager
+ from pathlib import Path
+@@ -225,6 +227,51 @@ def get_status(execution_id: str) -> Optional[dict]:
+     }
+ 
+ 
++def cancel_execution(execution_id: str, reason: str) -> dict:
++    """Cancel one exact execution's queued or held delivery in the active profile.
++
++    A tombstone written before any enqueue keeps a later enqueue (including a hold released by
++    ``sweep_holds``) from sending. A pending row is suppressed atomically against claim; a claimed
++    send keeps its real outcome because cancellation cannot unsend it. Callers own authorization and
++    pass an exact execution id, never a job id.
++    """
++    if not isinstance(execution_id, str) or not execution_id.strip():
++        raise ValueError("A nonempty execution id is required.")
++    if not isinstance(reason, str) or not reason.strip():
++        raise ValueError("A cancellation reason is required.")
++    safe_reason = redact_sensitive_text(reason, force=True)[:2048]
++    with _transaction() as conn:
++        conn.execute("BEGIN IMMEDIATE")
++        stamp = _hermes_now().isoformat()
++        row = conn.execute("SELECT status FROM deliveries WHERE execution_id=?", (execution_id,)).fetchone()
++        if row is None:
++            conn.execute(
++                """INSERT OR IGNORE INTO delivery_tombstones
++                   (execution_id, terminal_status, finished_at) VALUES (?, 'suppressed', ?)""",
++                (execution_id, stamp),
++            )
++        elif row["status"] == "pending":
++            conn.execute(
++                """UPDATE deliveries SET status='suppressed', finished_at=?, error=?
++                   WHERE execution_id=? AND status='pending'""",
++                (stamp, safe_reason, execution_id),
++            )
++        has_holds = conn.execute(
++            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='delivery_holds'").fetchone()
++        if has_holds:
++            conn.execute("DELETE FROM delivery_holds WHERE execution_id=?", (execution_id,))
++        now = conn.execute("SELECT status FROM deliveries WHERE execution_id=?", (execution_id,)).fetchone()
++        status = now["status"] if now is not None else "suppressed"
++    return {
++        "execution_id": execution_id,
++        "status": status,
++        "cancellation_requested": True,
++        "in_flight": status == "delivering",
++        "prevented": status == "suppressed",
++        "reconciliation_required": status in {"delivering", "failed", "unknown"},
++    }
++
++
+ def claim_next() -> Optional[dict]:
+     """Atomically claim one pending send before touching the transport."""
+     pid = os.getpid()
+@@ -325,16 +372,172 @@ def recover_abandoned() -> int:
+     return len(fenced)
  
  
 +# ---- deliver_after holds -------------------------------------------------------------------------
@@ -115,7 +171,7 @@ index b7aba54f9be98ddfe447dc57550aa0fa942acc9d..a1afd892a131114ea9a611c78a4e57fb
 +    a pending row the gate now closes (queued just before the window shut) is parked, never having
 +    been claimed; a hold whose time has come is asked once more (the owner's clock may have moved)
 +    and then enters the ordinary queue through ``enqueue``. ``enqueue`` is keyed by the same
-+    execution id and honours the archive and tombstones, so a crash between its insert and the
++    execution id and honours tombstones, so a crash between its insert and the
 +    delete below cannot produce a second send, and a cancelled execution is dropped unsent.
 +    """
 +    at = time.time() if now is None else float(now)
@@ -184,12 +240,12 @@ index b7aba54f9be98ddfe447dc57550aa0fa942acc9d..a1afd892a131114ea9a611c78a4e57fb
              _ACTIVE_DELIVERIES.add(row["execution_id"])
          try:
 diff --git a/cron/scheduler_delivery.py b/cron/scheduler_delivery.py
-index 650d444d79c1d78dc91d74193473ca45ee8c07ea..455c2fddf9291cfd426fd1d2c0cd7a311e2d4366 100644
+index 3c49e0f6cbf8880528bbd8b7f9afa26368279e69..884de6f9e4d6cd8d8e30dd52c6986c7cef908740 100644
 --- a/cron/scheduler_delivery.py
 +++ b/cron/scheduler_delivery.py
-@@ -1991,6 +1991,26 @@ def _deliver_result(
+@@ -1732,6 +1732,26 @@ def _deliver_result(
          _record_delivery_verification(job, [])
-         return _unresolved_delivery_outcome(job, for_failure)
+         return outcome
  
 +    # Per-profile hold (cron.deliver_gate, off by default): park the whole delivery before any
 +    # transport is touched; the queue drain sends it once when due. A row the drain just released
@@ -214,7 +270,7 @@ index 650d444d79c1d78dc91d74193473ca45ee8c07ea..455c2fddf9291cfd426fd1d2c0cd7a31
      # Restart-safe workers have no live gateway adapters: hand the send back through a durable
      # queue so the current or replacement gateway performs it with relay/E2EE parity. The execution
      # id is the idempotency key (the queue never retries an uncertain claimed send). Match on THIS
-@@ -2026,7 +2046,7 @@ def _deliver_result(
+@@ -1766,7 +1786,7 @@ def _deliver_result(
      # Targets acked with NO evidence (bare SendResult(success=True) — Slack/Matrix/Mattermost);
      # persisted as ``last_delivery_unverified`` so `hermes cron list` shows it.
      unverified_targets: list = []
@@ -223,15 +279,47 @@ index 650d444d79c1d78dc91d74193473ca45ee8c07ea..455c2fddf9291cfd426fd1d2c0cd7a31
          task_name = job.get("name", job["id"])
          delivery_content = (
              f"Cronjob Response: {task_name}\n"
+diff --git a/gateway/outbound/send.py b/gateway/outbound/send.py
+index 049b86a31baac4917d031e97d0bf3329363a791d..cad650907998618d97e86b6b37cb57fbeaa326c0 100644
+--- a/gateway/outbound/send.py
++++ b/gateway/outbound/send.py
+@@ -210,6 +210,27 @@ def _handle_send(args):
+     if _relay_denial:
+         return tool_error(_relay_denial)
+ 
++    # Per-profile hold (cron.deliver_gate, off by default): the same gate and durable hold scheduled
++    # results use. The original text (MEDIA tags included) and target are parked; nothing is sent now.
++    from cron.delivery_queue import deliver_gate, hold
++    hold_job = {"id": "send-hold", "name": "held send", "deliver": target, "_verbatim": True,
++                "_hold_surface": "send"}
++    deliver_after = deliver_gate(hold_job, message, surface="send")
++    if deliver_after == float("inf"):
++        # The gate is on but gave no answer. The caller still owns this message and its retry, so
++        # nothing is parked here: parking each retry would deliver the same message several times.
++        return tool_error("This profile's delivery gate gave no answer. Nothing was sent or queued; try again later.")
++    if deliver_after is not None:
++        import uuid
++
++        hold_job["execution_id"] = "send-" + uuid.uuid4().hex
++        hold(hold_job["execution_id"], hold_job, message, deliver_after=deliver_after)
++        return json.dumps({
++            "skipped": True, "held": True, "hold_id": hold_job["execution_id"],
++            "deliver_after": deliver_after,
++            "note": "Held by this profile's delivery gate. It will be delivered once when the hold "
++                    "ends. Do not send it again."})
++
+     try:
+         from model_tools import _run_async
+         # Only custom plugin handlers receive the complete typed request. ``mentions`` is only for platforms
 diff --git a/hermes_cli/plugins.py b/hermes_cli/plugins.py
-index 75a16aad52ff60fb59d48118010ff50ff45b2c87..b82ef23463d242e07126ea946e8e4c7b48e87918 100644
+index 8dfe4b6d3d70d26a5af3f7d83a3b97fcae136fca..147386a2007abaa58b5309d09adb212b5d4f07fa 100644
 --- a/hermes_cli/plugins.py
 +++ b/hermes_cli/plugins.py
-@@ -108,6 +108,11 @@ _install_plugin_debug_handler()
- 
- VALID_HOOKS: Set[str] = {
-     "cron_execute",  # Claimed native scheduled dispatch; registered consumer may handle.
-+    # pre_deliver: asked before a scheduled result or a `hermes send` message leaves, and only when
+@@ -111,6 +111,11 @@ _install_plugin_debug_handler()
+ # The function that fires each name is listed in website/docs/developer-guide/plugins/index.md
+ # ("Where each hook fires"); add a row there when you add a hook.
+ VALID_HOOKS: set[str] = {
++    # pre_deliver: asked before a scheduled result or a send_message message leaves, and only when
 +    # the profile sets cron.deliver_gate (cron/delivery_queue.py::deliver_gate). Kwargs: job, content,
 +    # for_failure, surface ("cron" | "send"). Return {"deliver_after": <epoch seconds>} to hold the
 +    # whole delivery until then, or {"open": True} to send now. No answer holds (fail closed).
@@ -361,35 +449,15 @@ index 0000000000000000000000000000000000000000..546844d87ab56a1466df7632da83c65e
 +    queue.drain(send)
 +    send.assert_not_called()
 +
-diff --git a/tools/send_message_tool.py b/tools/send_message_tool.py
-index aa05980459ddd11465f8283c70b44f8a8e54aadb..c9b31bb3e6327f19ef8bbf0cbcff1987f18b2dbd 100644
---- a/tools/send_message_tool.py
-+++ b/tools/send_message_tool.py
-@@ -264,6 +264,27 @@ def _handle_send(args):
-     if _relay_denial:
-         return tool_error(_relay_denial)
+diff --git a/website/docs/developer-guide/plugins/index.md b/website/docs/developer-guide/plugins/index.md
+index c4da0c384f701085ce187289db67037485c5f98b..94243668830f28fbddd4f314a5d0dc6f20169168 100644
+--- a/website/docs/developer-guide/plugins/index.md
++++ b/website/docs/developer-guide/plugins/index.md
+@@ -1782,6 +1782,7 @@ Every name in `hermes_cli.plugins.VALID_HOOKS` has at least one core fire site.
  
-+    # Per-profile hold (cron.deliver_gate, off by default): the same gate and durable hold scheduled
-+    # results use. The original text (MEDIA tags included) and target are parked; nothing is sent now.
-+    from cron.delivery_queue import deliver_gate, hold
-+    hold_job = {"id": "send-hold", "name": "held send", "deliver": target, "_verbatim": True,
-+                "_hold_surface": "send"}
-+    deliver_after = deliver_gate(hold_job, message, surface="send")
-+    if deliver_after == float("inf"):
-+        # The gate is on but gave no answer. The caller still owns this message and its retry, so
-+        # nothing is parked here: parking each retry would deliver the same message several times.
-+        return tool_error("This profile's delivery gate gave no answer. Nothing was sent or queued; try again later.")
-+    if deliver_after is not None:
-+        import uuid
-+
-+        hold_job["execution_id"] = "send-" + uuid.uuid4().hex
-+        hold(hold_job["execution_id"], hold_job, message, deliver_after=deliver_after)
-+        return json.dumps({
-+            "skipped": True, "held": True, "hold_id": hold_job["execution_id"],
-+            "deliver_after": deliver_after,
-+            "note": "Held by this profile's delivery gate. It will be delivered once when the hold "
-+                    "ends. Do not send it again."})
-+
-     try:
-         from model_tools import _run_async
-         # Only custom plugin handlers receive the complete typed request. ``mentions`` is a WhatsApp-only
+ | Hook | Fired by |
+ |------|----------|
++| `pre_deliver` | `cron/delivery_queue.py` `deliver_gate`, called from `cron/scheduler_delivery.py` `_deliver_result`, `cron/delivery_queue.py` `sweep_holds` and `gateway/outbound/send.py` (only when the profile sets `cron.deliver_gate`) |
+ | `pre_tool_call` | `hermes_cli/plugins.py` `_dispatch_pre_tool_call_hooks`, called from `agent/tool_executor.py` `_pre_tool_block`, `agent/agent_runtime_helpers.py` `_pre_tool_block_message` and `model_tools.py` `_pre_dispatch_guards` |
+ | `post_tool_call` | `model_tools.py` `_emit_post_tool_call_hook` |
+ | `transform_terminal_output` | `tools/terminal_tool_result.py` `_apply_output_transform_hook` |

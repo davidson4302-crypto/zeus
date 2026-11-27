@@ -1,0 +1,146 @@
+diff --git a/gateway/response_filters.py b/gateway/response_filters.py
+index bac26e68f794eeb929267f427ec5ef238b2c8edc..b9d700d75946ee610e63745f775c2229e10254ec 100644
+--- a/gateway/response_filters.py
++++ b/gateway/response_filters.py
+@@ -365,6 +365,49 @@ def silence_allowed(
+             and agent_result.get("completed") is not False)
+ 
+ 
++# A bare acknowledgement closes the exchange, so an agent's silence marker on it is correct, not an
++# error to report.
++_ACK_PHRASES = frozenset({
++    "got it", "gotcha", "ok", "okay", "k", "kk", "ok thanks", "okay thanks", "ok thank you",
++    "thanks", "thank you", "thx", "ty", "tysm", "thanks!", "cool", "cool thanks", "nice", "perfect",
++    "great", "great thanks", "sounds good", "sounds great", "all good", "will do", "noted", "roger",
++    "copy", "copy that", "understood", "makes sense", "awesome", "sweet", "got it thanks",
++    "got it thank you", "perfect thanks", "ok cool", "ok great", "ok perfect", "word", "bet",
++    "👍", "👌", "🙏", "✅", "🙌", "👍🏻", "👍🏼", "👍🏽", "👍🏾", "👍🏿", "❤️", "😊", "🔥",
++})
++
++
++def _display_setting(key: str) -> Any:
++    try:
++        from hermes_cli.config import load_config_readonly
++
++        return (load_config_readonly().get("display") or {}).get(key)
++    except Exception:
++        return None
++
++
++def quiet_acknowledgements_enabled() -> bool:
++    """``display.quiet_acknowledgements`` in the active profile's config (off by default)."""
++    return _display_setting("quiet_acknowledgements") is True
++
++
++def unexpected_silence_notice() -> Optional[str]:
++    """``display.unexpected_silence_notice``: the profile's own wording for that notice, or None."""
++    value = _display_setting("unexpected_silence_notice")
++    return value.strip()[:500] if isinstance(value, str) and value.strip() else None
++
++
++def is_pure_acknowledgement(text: Any) -> bool:
++    """True when ``text`` is only a short closing acknowledgement ("Got it", "ok thanks", "👍")."""
++    if not isinstance(text, str):
++        return False
++    t = " ".join(text.strip().lower().split())
++    if not t or len(t) > 40:
++        return False
++    t = t.strip(" .!,~")
++    return t in _ACK_PHRASES
++
++
+ def reply_expected_metadata(reply_expected: Optional[bool]) -> dict:
+     """The persisted user row's ``reply_expected`` key, only when the adapter knew; crash recovery
+     reads it back to judge a silence marker as the live turn did."""
+diff --git a/gateway/run_turn.py b/gateway/run_turn.py
+index 58ce571227e985e3ec2d0a510fffcec19fe05413..b54887950c90b9c9b4974b0f946dee5e1b1a1192 100644
+--- a/gateway/run_turn.py
++++ b/gateway/run_turn.py
+@@ -89,7 +89,12 @@ _CONTEXT_OVERFLOW_ERROR_PHRASES = (
+ )
+ 
+ def _unexpected_silence_reply() -> str:
+-    """Reply when the model returned only a silence marker for a message that needed an answer."""
++    """Reply when the model returned only a silence marker for a message that needed an answer.
++    A profile may replace the wording with ``display.unexpected_silence_notice``."""
++    from gateway.response_filters import unexpected_silence_notice
++    custom = unexpected_silence_notice()
++    if custom:
++        return custom
+     return t("gateway.errors.unexpected_silence")
+ 
+ 
+@@ -196,6 +201,12 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
+             len(event.text or ""), getattr(event, "reply_to_message_id", None),
+         )
+ 
++        # display.quiet_acknowledgements: a bare "Got it" / "ok" / "thanks" needs no answer, so the agent
++        # may stay quiet instead of the gateway sending the unexpected-silence notice.
++        from gateway.response_filters import is_pure_acknowledgement, quiet_acknowledgements_enabled
++        if (not event.internal and event.reply_expected is not False and not event.media_urls
++                and is_pure_acknowledgement(event.text) and quiet_acknowledgements_enabled()):
++            event.reply_expected = False
+         from gateway.run_turn_setup_guard import run_preagent_setup
+         setup, reply = await run_preagent_setup(self, event, source, _quick_key, run_generation)
+         if setup is None:
+diff --git a/tests/gateway/test_ack_silence.py b/tests/gateway/test_ack_silence.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..79a62df96aff207534a6f4cd0becc219b7440668
+--- /dev/null
++++ b/tests/gateway/test_ack_silence.py
+@@ -0,0 +1,55 @@
++"""A bare acknowledgement may end quietly, and the silence notice wording is a profile setting.
++
++Both are off unless the profile's display config turns them on. Made-up text only.
++"""
++import json
++
++import pytest
++
++from gateway import response_filters as rf
++from gateway.response_filters import is_pure_acknowledgement, silence_allowed
++
++
++@pytest.mark.parametrize("text", ["Got it", "got it.", "OK", "ok thanks!", "Thanks", "👍", "sounds good", "  Perfect  "])
++def test_acks(text):
++    assert is_pure_acknowledgement(text)
++
++
++@pytest.mark.parametrize("text", ["You still alive?", "1 yes  their name is Alex. ", "got it, now send it to Jordan",
++                                  "ok?", "", None, "thanks for the draft, change the second line"])
++def test_not_acks(text):
++    assert not is_pure_acknowledgement(text)
++
++
++def test_ack_turn_allows_silence():
++    assert silence_allowed(None, False)
++    assert not silence_allowed(None, None)
++
++
++def _profile(tmp_path, monkeypatch, display):
++    home = tmp_path / "home"
++    home.mkdir(exist_ok=True)
++    (home / "config.yaml").write_text(json.dumps({"display": display}))
++    monkeypatch.setenv("HERMES_HOME", str(home))
++
++
++def test_settings_are_off_by_default(tmp_path, monkeypatch):
++    _profile(tmp_path, monkeypatch, {})
++    assert rf.quiet_acknowledgements_enabled() is False
++    assert rf.unexpected_silence_notice() is None
++    from gateway.run_turn import _unexpected_silence_reply
++    assert "silence marker" in _unexpected_silence_reply()
++
++
++def test_profile_opts_in(tmp_path, monkeypatch):
++    _profile(tmp_path, monkeypatch, {"quiet_acknowledgements": True,
++                                     "unexpected_silence_notice": "Sorry, that reply got lost. Send it again?"})
++    assert rf.quiet_acknowledgements_enabled() is True
++    from gateway.run_turn import _unexpected_silence_reply
++    assert _unexpected_silence_reply() == "Sorry, that reply got lost. Send it again?"
++
++
++@pytest.mark.parametrize("value", [True, "yes", 1])
++def test_only_a_real_true_turns_it_on(tmp_path, monkeypatch, value):
++    _profile(tmp_path, monkeypatch, {"quiet_acknowledgements": value})
++    assert rf.quiet_acknowledgements_enabled() is (value is True)

@@ -8,8 +8,14 @@ them as patch files and applies them to your Hermes install for you.
 - Order, purpose and which ones are required: `src/zeus_ai/hermes_patches/series.json`
 - The tool that applies them: `src/zeus_ai/hermes_patch.py`
 
-All patches were made against Hermes commit `7793ed0da9`. Each patch changes its own lines, so you
-can apply any subset in the listed order.
+**Hermes version.** The patches are made against Hermes **v0.23.4** (commit `8fc0374447`), the
+release the Hermes installer's default `stable` channel installs. To get exactly that version:
+
+```bash
+curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash -s -- --commit 8fc0374447313e276f6b9a2764bfc750190c966a
+```
+
+Each patch changes its own files, so you can apply any subset in the listed order.
 
 ## Using the patch tool
 
@@ -50,16 +56,16 @@ agent sends with `send_message`. When a profile turns it on (`cron.deliver_gate:
 the profile's plugins, through a new `pre_deliver` hook, whether this message may go now. A plugin
 answers "send now" or "hold until time T". A held message is parked whole (text, attachments and
 destination) in the existing delivery queue database, and sent exactly once when its time comes.
+It also adds `cancel_execution`, which stops a queued or held delivery before it goes out.
 
 **Why Zeus needs it.** Zeus promises quiet hours: nothing reaches your phone at night unless it is
-urgent. Without this patch, a scheduled job or an agent-sent message has no way to wait. Zeus's
-`life-work-guard` plugin answers the hook with the end of your quiet hours.
+urgent. Zeus's `life-work-guard` plugin answers the hook with the end of your quiet hours, and
+Zeus's work tracker cancels a held reply it no longer needs.
 
 **Safety details.** The gate is off unless the profile's config turns it on, so other profiles behave
 exactly as before. If the gate is on but no plugin answers (or the plugin crashes), the message is
 held and asked about again five minutes later. A late message can be recovered; a sent one cannot.
-Held messages go through the existing queue, so the queue's "at most once" rule and cancellations
-still apply.
+Held messages go through the existing queue, so its "at most once" rule and tombstones still apply.
 
 **Draft upstream pull request**
 
@@ -70,141 +76,58 @@ still apply.
 >
 > - a `pre_deliver` plugin hook, called with `job`, `content`, `for_failure` and `surface`
 >   (`"cron"` or `"send"`). A plugin returns `{"deliver_after": <epoch seconds>}` to hold, or
->   `{"open": True}` to send now. The latest hold wins.
+>   `{"open": True}` to send now. The latest hold wins. Listed in the hook table in the plugin guide.
 > - `cron.deliver_gate` (default off). When it is off, nothing changes and the hook is never called.
 > - a `delivery_holds` table in the existing delivery queue database. A held delivery is stored
 >   before anything is claimed or sent, and re-enters the normal queue through `enqueue` when due,
->   so idempotency, tombstones and cancellation all keep working.
-> - `send_message` uses the same gate, and returns `held: true` with the hold id instead of sending.
+>   so idempotency and tombstones keep working.
+> - `send_message` (`gateway/outbound/send.py`) uses the same gate and returns `held: true` with the
+>   hold id instead of sending.
+> - `cancel_execution(execution_id, reason)`: suppresses a pending delivery, tombstones one not yet
+>   queued and drops its hold; a claimed send keeps its real outcome.
 >
 > Fail-closed: with the gate on and no usable answer, the delivery is held and re-asked after
 > `HOLD_RECHECK_SECONDS`. Tests: `tests/cron/test_deliver_gate.py`.
 
-### 02 Helper-result delivery identity (required, bug fix)
+### 02 Quiet acknowledgements (optional)
 
-**What it does.** When a background helper (a delegated task or a watched process) finishes, Hermes
-sends its result into the chat. On chat lines with durable delivery, each send needs a unique
-identity so it is never sent twice. Helper results had no message id, so every one of them in a chat
-got the *same* identity. The first was delivered; every later one was refused as a duplicate.
-The patch gives each helper result its own stable identity.
+**What it does.** Two per-profile display settings, both off by default:
 
-**Why Zeus needs it.** Zeus hands long jobs to background helpers so the chat stays free. Without
-this fix, only the first helper result ever reaches you.
+- `display.quiet_acknowledgements: true`. When you text just "ok", "thanks" or a thumbs-up there is
+  nothing to answer, so the agent may stay quiet without Hermes warning that no reply came back.
+- `display.unexpected_silence_notice: "<your wording>"`. Replaces the wording of that warning, for
+  the cases where it still appears (for example "Sorry, my reply got lost there. Send that again.").
 
 **Draft upstream pull request**
 
-> **Give synthetic completion events their own delivery obligation id**
+> **Opt-in silence on a bare acknowledgement; configurable unexpected-silence notice**
 >
-> On strict (durable) transports the obligation id ignores the text, so an event with no message id
-> and no ledger id hashes to `sha(session||)`: one id shared by every background completion in that
-> chat. The first owns the journal row and later ones fail with "payload changed".
->
-> The completion notifier now stamps each synthetic event with its producer's stable id
-> (`process:<id>`), and `send_final_ledgered` falls back to that, or to a fresh per-event id, when the
-> strict id would otherwise be empty. Normal replies to inbound messages keep their existing id, so
-> existing ledger rows stay valid. Tests: `tests/gateway/test_completion_producer_ref.py`,
-> `tests/gateway/test_synthetic_final_identity.py`.
+> With `display.quiet_acknowledgements: true`, a message that is only a short closing acknowledgement
+> ("got it", "ok thanks", "👍") is marked `reply_expected = False` before the turn runs (not for
+> internal events or messages with media), so a silence marker on it is not reported. With
+> `display.unexpected_silence_notice` set, that string replaces the localized notice. Both default
+> off; locale catalogs are unchanged. Tests: `tests/gateway/test_ack_silence.py`.
 
-### 03 Ghost-turn watchdog fix (optional, bug fix)
-
-**What it does.** The gateway watchdog cleans up "ghost" turns: work that looks stuck. It treated a
-turn whose session row was not yet written as "closed", so a brand-new turn could be flagged at age
-zero. The patch counts a turn as closed only when its row exists and says it ended. Truly stuck turns
-are still caught by the idle and wall-clock rules.
-
-**Draft upstream pull request**
-
-> **Watchdog: a missing session row is "not written yet", not "closed"**
->
-> `_ghost_reason` used the routing store's `_is_session_ended_in_db`, which treats a missing row as
-> ended. That is right for routing, but a just-admitted turn has its session id in the routing index
-> before `run_agent` inserts the row, so the watchdog flagged live turns as `session_closed` at age 0.
-> `_session_row_ended` now reads the owning profile's database and requires an existing row with an
-> `end_reason`. Stuck slots with no row still fall through to the idle and wall-clock checks.
-> Tests: `tests/gateway/test_watchdog_ghost_turns.py`.
-
-### 04 Busy note per profile (optional)
-
-**What it does.** When you text an agent that is still working, Hermes can send a short "still on
-your last message" note. That was one switch for the whole gateway (an environment variable). The
-patch makes it a normal per-profile display setting, `display.busy_ack_enabled`, which can also be
-set per platform. When unset, the old environment variable still decides.
-
-**Why Zeus needs it.** Zeus folds your follow-up into the work quietly instead of sending a busy note.
-
-**Draft upstream pull request**
-
-> **Make busy acknowledgements a per-profile display setting**
->
-> `HERMES_GATEWAY_BUSY_ACK_ENABLED` is process-wide, so on a multi-profile gateway one profile cannot
-> opt out. This adds `display.busy_ack_enabled` (and its per-platform form), resolved from the admitted
-> event's own profile, with the environment variable as the fallback. If the profile cannot be
-> resolved, the note is suppressed rather than borrowing another profile's setting. Queued input and
-> the final reply are unchanged. Tests: `tests/gateway/test_busy_ack_profile_settings.py`.
-
-### 05 Quiet acknowledgements (optional)
-
-**What it does.** When you text just "ok", "thanks" or a thumbs-up, there is nothing to answer. If the
-agent stayed quiet, Hermes used to send a warning that the model returned no reply. The patch marks a
-bare acknowledgement as "no reply expected", so silence is fine there. It also rewords that warning,
-for the cases where it still appears, to plain language: "Sorry, my reply got lost there. Send that
-again and I'll answer."
-
-**Draft upstream pull request**
-
-> **Allow silence on a bare acknowledgement; plain-language unexpected-silence notice**
->
-> A message that is only a short closing acknowledgement ("got it", "ok thanks", "👍") now sets
-> `reply_expected = False` before the turn runs (not for internal events or messages with media), so
-> a silence marker on it is not reported as an error. The `unexpected_silence` notice is reworded for
-> end users. Tests: `tests/gateway/test_ack_silence.py`, updated `test_active_turn_recovery.py`.
-
-### 06 Reasoning effort per profile and job type (optional)
+### 03 Reasoning effort per job type (optional)
 
 **What it does.** Lets a profile choose how hard the model thinks for different kinds of work:
 
 - `cron.reasoning_effort`: a lower (cheaper) effort for scheduled jobs that use the cron model, while
-  chat keeps its own effort. A fallback to a different model keeps that model's effort.
+  chat keeps its own effort. A fallback onto a different model keeps that model's effort.
 - A background review can use a separate effort without disturbing the main chat's cached prompt
   (`inherit_parent_reasoning: false`).
-- The Grok 4.7 effort opt-in (`agent.grok47_reasoning_effort`) is read from the current profile, so
-  scheduled and delegated work on that profile honor it too.
 
 **Draft upstream pull request**
 
-> **Per-profile reasoning effort for cron, background review and delegated xAI work**
+> **cron.reasoning_effort and a separate background-review effort**
 >
 > - `cron.reasoning_effort` applies to jobs on `cron.model` only; an explicit job effort still wins,
 >   and an invalid value logs a warning and falls back to the agent config.
 > - `_resolve_review_runtime` honors `inherit_parent_reasoning: false` for a same-model review by
 >   taking the routed (cold) branch, leaving the parent's warm prompt untouched.
-> - The xAI Responses transport reads `agent.grok47_reasoning_effort` from the active profile when the
->   private resolver marker is absent (task-specific parsers), so the opt-in no longer depends on
->   which code path built the request.
-> Tests: `test_cron_default_reasoning.py`, `test_background_review_separate_effort.py`,
-> `test_grok_effort_profile_scope.py`.
+> Tests: `test_cron_default_reasoning.py`, `test_background_review_separate_effort.py`.
 
-### 07 Work model tiers (optional, not used by the default Zeus config)
-
-**What it does.** An opt-in setting, `agent.work_model_tiers`, with up to three routes: `lookup`,
-`workflow` and `recovery`, each a model, provider and effort you configure. Hermes reads what a turn,
-scheduled job or delegated task asks for and picks a route: a quick lookup, a multi-step workflow, or
-debugging and recovery. After real tool calls complete, a turn can move up a tier (never down, never
-to another provider). Your words pick a category only, never a model, account or permission. An
-explicit model choice (session, channel, command line) always wins.
-
-**Draft upstream pull request**
-
-> **Opt-in work model tiers for chat, cron, one-shot and delegated tasks**
->
-> Adds `agent/work_model_tiers.py` and wires it into the gateway turn runner, CLI chat and single-query
-> modes, `oneshot`, cron agent setup and `delegate_task`. With no `agent.work_model_tiers` configured,
-> every path is unchanged. Each tier resolves through the normal runtime resolver and its own
-> fallback chain. Promotion after tools reads only completed tool receipts in the current turn, and
-> never retries, rewrites or invokes anything. Explicit session, channel, CLI and job overrides are
-> honored. Tests: `tests/agent/test_work_model_tiers.py`.
-
-### 08 Photon iMessage: tapbacks, link bubbles, status stickers, stream refresh (optional)
+### 04 Photon iMessage: tapbacks, link bubbles, status stickers, stream refresh (optional)
 
 **What it does.** Several improvements to the Photon (iMessage) platform, each off unless the
 profile's `platforms.photon.extra` turns it on:
@@ -212,15 +135,18 @@ profile's `platforms.photon.extra` turns it on:
 - **Tapbacks that mean something** (`reactions: meaning`). 👀 while the agent works, ❤️ for a thanks,
   👍 for a plain "ok", nothing on a hello. At the end: ✅ only when a to-do was really closed this turn,
   ⏰ only when a reminder was set *and read back*, both proven from saved records, never from the
-  model's words. A reply that only says "Got it" is sent as the 👍 tapback instead of a text. While a
-  background helper works on your ask, the 👀 stays until its result arrives. Optional:
+  model's words. A turn's only reply that just says "Got it" is sent as the 👍 tapback instead of a
+  text. While a background helper works on your ask, the 👀 stays until its result arrives. Optional:
   `tapback_names` (names you might add, "thanks Sam") and `tapback_life_cli` (default `zeus-life`).
+  The `reactions` value may also come from `PHOTON_REACTIONS` as before.
 - **Link bubbles** (`link_bubbles: true`). A link at the end of a line is sent as its own message so
   iMessage shows a preview card. No words are dropped or reordered.
 - **Status stickers** (optional). Small stickers such as "Need your OK", "Pick one", "Reminder set" or
   "Price dropped" on your message, placed only from saved records and never during quiet hours.
   They stay off unless a settings file at `~/.config/photon-status-stickers/<project>-<port>.json`
-  turns them on. A missing or broken sticker bundle never stops the iMessage connection.
+  turns them on. On v0.23.4 most of them stay inert: they read a per-send delivery journal and an
+  owner-admission record that this Hermes version does not write. A missing or broken sticker bundle
+  never stops the iMessage connection.
 - **Quiet a recipient's automatic tapbacks** on a shared line (`automatic_reactions_ignored_users`).
 - **Stream refresh.** A long-quiet inbound stream is refreshed in place instead of restarting the
   whole connection, and outbound sends stay available. The quiet check moves from 10 minutes to
@@ -230,13 +156,12 @@ profile's `platforms.photon.extra` turns it on:
 
 > **Photon: meaningful tapbacks, link bubbles, optional status stickers, in-place stream refresh**
 >
-> - `reactions: meaning` adds a third reaction mode beside off and on. Opening tapbacks come from the
->   user's words; final tapbacks (✅, ⏰) need durable evidence read from state.db and the profile's
->   life-engine ledger, read-only. An acknowledgement-only final reply becomes a 👍 tapback and the
->   delivery ledger row is marked delivered.
-> - `link_bubbles: true` sends line-ending links as separate messages; each bubble has its own
->   delivery component id so a redelivery skips bubbles already accepted. Never applied to a
->   verified handoff send.
+> - `reactions: meaning` adds a third reaction mode beside off and on, readable from
+>   `platforms.photon.extra.reactions` or `PHOTON_REACTIONS`. Opening tapbacks come from the user's
+>   words; final tapbacks (✅, ⏰) need durable evidence read from state.db and the profile's
+>   life-engine ledger, read-only. A turn whose only reply is an acknowledgement answers with a 👍.
+> - `link_bubbles: true` sends line-ending links as separate messages through `send_chunks`, so a
+>   failure part-way is a partial delivery and nothing already delivered is re-sent.
 > - Status stickers live in `sidecar/status-stickers/`, load lazily, and are off without an explicit
 >   per-project settings file.
 > - `automatic_reactions_ignored_users` quiets automatic tapbacks for listed senders; deliberate
@@ -250,4 +175,10 @@ profile's `platforms.photon.extra` turns it on:
 
 ## Not included
 
-- Changes to the Slack platform (a shared-room feature) are not part of Zeus and are not shipped.
+- The maintainer's own Hermes also carries a larger set of local changes (a shared conversation across
+  surfaces, a per-send delivery journal, human-request priority, reviewed cron retries and more).
+  Several Zeus plugins call into those; on v0.23.4 those calls are missing, so those plugin paths
+  need further work before Zeus runs fully on public Hermes.
+- Work model tiers, a per-profile busy note and a watchdog fix from the earlier set are not needed on
+  this version (not used by Zeus, already in Hermes, or the code they fixed is not in Hermes).
+- Photon polls and the Slack shared-room work are not part of Zeus.

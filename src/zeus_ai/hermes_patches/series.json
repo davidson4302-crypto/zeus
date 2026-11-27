@@ -1,61 +1,35 @@
 {
   "upstream": "https://github.com/NousResearch/hermes-agent",
-  "base_commit": "7793ed0da9c1fa1b65a02319f486023393997dcb",
-  "apply_order_note": "Each patch is a git diff against base_commit and touches its own lines, so any subset applies in this order. 06 and 07 both change cron/scheduler.py in different places.",
+  "base_tag": "v0.23.4",
+  "base_commit": "8fc0374447313e276f6b9a2764bfc750190c966a",
+  "base_note": "The release the Hermes installer's default stable channel installs (latest vX.Y.Z release). Install it with: install.sh --commit 8fc0374447313e276f6b9a2764bfc750190c966a",
+  "apply_order_note": "Each patch is a git diff against base_commit and touches its own files, so any subset applies in this order.",
   "patches": [
     {
       "file": "01-quiet-hours-deliver-gate.patch",
-      "purpose": "Adds an opt-in delivery gate (cron.deliver_gate) and a pre_deliver plugin hook so scheduled results and send_message messages can be held whole until a time the profile's plugin names.",
-      "zeus_features": ["quiet hours for scheduled results", "quiet hours for agent-sent messages"],
+      "purpose": "Adds an opt-in delivery gate (cron.deliver_gate) and a pre_deliver plugin hook so scheduled results and send_message messages can be held whole until a time the profile's plugin names; adds cancel_execution for a queued or held delivery.",
+      "zeus_features": ["quiet hours for scheduled results", "quiet hours for agent-sent messages", "cancel a held return"],
       "required": true,
       "kind": "safety"
     },
     {
-      "file": "02-helper-delivery-identity.patch",
-      "purpose": "Gives every background-helper result its own delivery identity on strict (durable) transports, so the second and later results in a chat are not refused as duplicates.",
-      "zeus_features": ["background helper results reach the chat"],
-      "required": true,
-      "kind": "bug fix"
-    },
-    {
-      "file": "03-ghost-turn-watchdog.patch",
-      "purpose": "Stops the watchdog from flagging a brand-new turn as a closed ghost before its session row is written.",
-      "zeus_features": ["no false stuck-turn cleanup"],
-      "required": false,
-      "kind": "bug fix"
-    },
-    {
-      "file": "04-busy-ack-per-profile.patch",
-      "purpose": "Makes the 'still working on your last message' busy note a per-profile display setting (display.busy_ack_enabled) instead of one gateway-wide environment variable.",
-      "zeus_features": ["steer silently while busy (busy_ack_enabled: false)"],
+      "file": "02-quiet-acknowledgements.patch",
+      "purpose": "Opt-in display.quiet_acknowledgements lets the agent stay silent on a bare 'ok' / 'thanks' / thumbs-up without an unexpected-silence notice; opt-in display.unexpected_silence_notice replaces that notice's wording.",
+      "zeus_features": ["no reply needed to a bare acknowledgement", "plain-language silence notice"],
       "required": false,
       "kind": "feature"
     },
     {
-      "file": "05-quiet-acknowledgements.patch",
-      "purpose": "Lets the agent stay silent on a bare 'ok' / 'thanks' / thumbs-up without the gateway sending an unexpected-silence warning, and makes that warning plain-spoken.",
-      "zeus_features": ["no reply needed to a bare acknowledgement"],
-      "required": false,
-      "kind": "feature"
-    },
-    {
-      "file": "06-reasoning-effort-scope.patch",
-      "purpose": "Per-profile reasoning effort: cron.reasoning_effort for scheduled jobs, a separate effort for background review, and the profile-owned Grok 4.7 effort opt-in honored by cron and delegated work.",
+      "file": "03-reasoning-effort-scope.patch",
+      "purpose": "cron.reasoning_effort for jobs on cron.model, and a separate background-review effort (inherit_parent_reasoning: false) that keeps the parent's warm prompt.",
       "zeus_features": ["cheaper scheduled work (cron.reasoning_effort)"],
       "required": false,
       "kind": "feature"
     },
     {
-      "file": "07-work-model-tiers.patch",
-      "purpose": "Opt-in agent.work_model_tiers: routes a turn, scheduled job or delegated task to a configured lookup / workflow / recovery model by what the instruction asks for.",
-      "zeus_features": ["optional model tiers (not used by the default Zeus config)"],
-      "required": false,
-      "kind": "feature"
-    },
-    {
-      "file": "08-photon-tapbacks-stickers-stream.patch",
+      "file": "04-photon-tapbacks-stickers-stream.patch",
       "purpose": "Photon iMessage: tapbacks that mean something (reactions: meaning), link preview bubbles (link_bubbles), optional status stickers, a per-recipient tapback opt-out, and an in-place refresh of a quiet inbound stream instead of a sidecar restart.",
-      "zeus_features": ["meaningful tapbacks", "link previews", "Need-your-OK and Reminder-set stickers", "stream refresh"],
+      "zeus_features": ["meaningful tapbacks", "link previews", "status stickers (inert on this base, see docs)", "stream refresh"],
       "required": false,
       "kind": "feature + bug fix"
     }

@@ -30,7 +30,15 @@ PLUGINS = ['aaa-zeus-scope', 'agentmail', 'cross-surface-recall', 'imessage-appr
 JOB_SCRIPTS = {'zeus_maintenance_tick.py': 'jobs/maintenance_tick.py', 'zeus_buy_settle.py': 'jobs/buy_settle_monitor.py',
                'zeus_signin_links.py': 'watch/zeus_signin_links.py', 'zeus_backup_small.sh': 'jobs/checkpoint.sh',
                'zeus_backup_full.sh': 'jobs/checkpoint.sh', 'zeus_backup_drill.sh': 'jobs/checkpoint.sh'}
-HERMES_INSTALL = 'curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash'
+def hermes_pin() -> str:
+    """The public Hermes commit Zeus's patches are built and tested on (hermes_patches/series.json)."""
+    try:
+        return str(json.loads((PKG / 'hermes_patches' / 'series.json').read_text())['base_commit'])
+    except (OSError, KeyError, ValueError):
+        return ''
+
+
+HERMES_INSTALL = ('curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash -s -- --commit ' + hermes_pin()).rstrip()
 COMPOSIO_INSTALL = 'curl -fsSL https://composio.dev/install | sh'
 LINKS = {'hermes': 'https://github.com/NousResearch/hermes-agent', 'photon': 'https://photon.codes',
          'composio': 'https://composio.dev'}
@@ -325,6 +333,14 @@ def step_patches(ctx: Ctx) -> None:
         say('  Patch module missing from this build: skipped. Quiet hours for scheduled sends will not hold.')
         return
     st = hermes_patch.status(ctx.hermes_agent_dir)
+    conflicts = [p.get('file') for p in st.get('patches', []) if p.get('state') == 'conflict']
+    if not st.get('ok') or conflicts:
+        raise SystemExit(
+            'Zeus\'s safety patches do not fit this Hermes install, so nothing was changed.\n'
+            f'Zeus is tested on Hermes commit {hermes_pin()}. Options:\n'
+            f'  - reinstall Hermes at that version: {HERMES_INSTALL}\n'
+            '  - or wait for a Zeus release that supports your Hermes version.\n'
+            'Details: `zeus hermes-patch status`.')
     if st.get('all_applied'):
         say('  already applied')
     elif ctx.dry_run:

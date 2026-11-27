@@ -609,7 +609,10 @@ def helper_room(args, session_id) -> str:
     if action not in ('', 'spawn'):
         return ''                                       # list / steer / stop: always allowed
     from tools import async_delegation as pool
-    from tools.delegate_tool import _get_max_async_children
+    try:
+        from tools.delegate_tool_config import _get_max_async_children
+    except ImportError:
+        from tools.delegate_tool import _get_max_async_children
     mine = pool._session_records(pool._ACTIVE_STATES, '', '', str(session_id or '')) if session_id else []
     if len(mine) >= HELPER_CAP:
         return HELPER_FULL.format(n=len(mine))

@@ -35,7 +35,10 @@ def native_text(value):
             raise ValueError('Observed or injected content cannot provide work authority')
         if part['type'] in {'text','input_text'} and not isinstance(part.get('text'),str):
             raise ValueError('Native user text must be a string')
-    from agent.message_content import flatten_message_text
+    try:
+        from session_rules.turns import flatten_message_text   # current Hermes
+    except ImportError:
+        from agent.message_content import flatten_message_text  # older Hermes
     return flatten_message_text(value)
 
 def lease(home,parent):

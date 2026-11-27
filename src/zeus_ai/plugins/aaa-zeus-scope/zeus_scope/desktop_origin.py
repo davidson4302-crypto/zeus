@@ -12,7 +12,10 @@ def desktop_human_submit(session_id, turn_id, user_message, conversation_history
         from hermes_constants import get_hermes_home
         from hermes_cli.profiles import get_active_profile_name
         from hermes_state import SessionDB
-        from agent.message_content import flatten_message_text
+        try:
+            from session_rules.turns import flatten_message_text   # current Hermes
+        except ImportError:
+            from agent.message_content import flatten_message_text  # older Hermes
         agent = get_active_subagent_parent()
         if (agent is None or getattr(agent, 'session_id', None) != session_id
                 or getattr(agent, '_current_turn_id', None) != turn_id

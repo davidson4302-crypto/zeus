@@ -949,7 +949,10 @@ def native_deadline_send(home, origin, operation_id, content):
     from gateway.session_context import set_session_vars, clear_session_vars
     from gateway.delivery_attempts import enabled
     from tools.approval_context import set_current_observability_context, reset_current_observability_context
-    from tools.send_message_tool import send_message_tool, prepare_send_message_platforms, _resolve_platform_config
+    try:
+        from gateway.outbound.send import send_message_tool, prepare_send_message_platforms, _resolve_platform_config
+    except ImportError:   # older Hermes
+        from tools.send_message_tool import send_message_tool, prepare_send_message_platforms, _resolve_platform_config
     from gateway.config import load_gateway_config
     from gateway.authz_mixin import _coerce_allow_set
     from gateway.platforms._shared import extra_or_secret

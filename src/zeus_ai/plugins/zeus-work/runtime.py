@@ -540,7 +540,10 @@ class Runtime:
             toolsets=parent.enabled_toolsets
             require(toolsets is None or isinstance(toolsets,list) and all(isinstance(x,str) and x for x in toolsets),"Native originating toolset scope is malformed.")
             source["native_tool_scope"]={"captured":True,"enabled_toolsets":list(toolsets) if toolsets is not None else None}
-            from tools.cronjob_job_args import _origin_from_env
+            try:
+                from cron.job_args import _origin_from_env   # current Hermes
+            except ImportError:
+                from tools.cronjob_job_args import _origin_from_env  # older Hermes
             source["return_origin"]=_origin_from_env("1m")
             targets = native_setting_scope(source,args["setting_inputs"]) if args.get("setting_inputs") else None
             r=store.create(args,source,self.ctx.profile_name,setting_targets=targets)

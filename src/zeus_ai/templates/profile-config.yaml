@@ -20,6 +20,8 @@ agent:
   system_prompt: ' Your own email tools are agentmail_inbox_list, agentmail_message_read, agentmail_send and agentmail_send_status. They use only your assigned mailbox. Preserve real action approvals, STOPs and uncertain-send no-replay.'
 display:
   busy_ack_enabled: false
+  quiet_acknowledgements: true    # a bare "ok" / "thanks" needs no reply (Zeus Hermes patch 02)
+  unexpected_silence_notice: "Sorry, my reply got lost there. Send that again and I'll answer."
   busy_input_mode: steer
   background_process_notifications: false
   memory_notifications: false

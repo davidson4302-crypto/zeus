@@ -1,8 +1,8 @@
 diff --git a/agent/background_review.py b/agent/background_review.py
-index 3b34116af216d4c8eeff19a9d75df621208e0f49..6d1d942706774be467fb390b4f129bffd466e73e 100644
+index 83d5bb2c08b60aa930298c1d9bb6982962412d1a..2e3528a7802841a7d5ed5b729a2986ec7ad1c73f 100644
 --- a/agent/background_review.py
 +++ b/agent/background_review.py
-@@ -262,6 +262,12 @@ def _resolve_review_runtime(agent: Any, task_cfg: Optional[Dict[str, Any]] = Non
+@@ -346,6 +346,12 @@ def _resolve_review_runtime(agent: Any, task_cfg: Optional[dict[str, Any]] = Non
      task_provider, task_model, task_base_url, task_api_key = (
          str(task.get(key, "")).strip() or None for key in ("provider", "model", "base_url", "api_key")
      )
@@ -15,37 +15,11 @@ index 3b34116af216d4c8eeff19a9d75df621208e0f49..6d1d942706774be467fb390b4f129bff
      if not (task_provider and task_provider != "auto" and task_model) or (
          task_provider == (agent.provider or "") and task_model == (agent.model or "")  # same as parent
      ):
-diff --git a/agent/transports/codex.py b/agent/transports/codex.py
-index 07fdcb1c4c0e26d6870ed7a8f8f044ba7917abe2..15ac5280eca0aae6d3cae0a2d626441c7ba92f35 100644
---- a/agent/transports/codex.py
-+++ b/agent/transports/codex.py
-@@ -279,11 +279,18 @@ _PROMPT_CACHE_OPTIONS_DROP_WARNED = False
- 
- 
- def _grok47_effort_opted_in(model: str, params: dict[str, Any]) -> bool:
--    """The native own-profile resolver alone opts this route into its effort dial."""
-+    """Honor the owning profile's opt-in for chat, cron and delegated forks."""
-     name = str(model or "").strip().lower().rsplit("/", 1)[-1]
-+    if not (name == "grok-4.7" or name.startswith("grok-4.7-")):
-+        return False
-     config = params.get("reasoning_config")
--    return bool(isinstance(config, dict) and config.get("_xai_grok47_effort") is True
--                and (name == "grok-4.7" or name.startswith("grok-4.7-")))
-+    if isinstance(config, dict) and config.get("_xai_grok47_effort") is True:
-+        return True
-+    # Task-specific effort parsers do not carry the main resolver's private
-+    # marker. Read the current profile, never the gateway's launch profile.
-+    from hermes_cli.config import load_config_readonly
-+    profile_cfg = load_config_readonly()
-+    return (profile_cfg.get("agent") or {}).get("grok47_reasoning_effort") is True
- 
- 
- def _resolve_reasoning(model: str, params: dict[str, Any]) -> tuple[Any, bool]:
 diff --git a/cron/scheduler.py b/cron/scheduler.py
-index a72ad8459bd1d3b39f2517d7067e5bb14a3d8579..29f7a149b56e4e041d43846b431acd83102108a1 100644
+index 1b142cb49b82269a9a677d505acc186c092cab6b..3f0fb201fb254a4fac057645283ad023e5e4d5b5 100644
 --- a/cron/scheduler.py
 +++ b/cron/scheduler.py
-@@ -551,6 +551,17 @@ def _resolve_job_reasoning_config(job: dict, cfg: dict, model: str) -> dict | No
+@@ -520,6 +520,17 @@ def _resolve_job_reasoning_config(job: dict, cfg: dict, model: str) -> dict | No
              job.get("id", "?"),
              pinned,
              job.get("id", "?"))
@@ -93,28 +67,6 @@ index 0000000000000000000000000000000000000000..5e2228862085b5ed72abb769867a39c8
 +    agent=parent()
 +    cfg={'provider':agent.provider,'model':agent.model,'reasoning_effort':'low'}
 +    assert _resolve_review_runtime(agent,cfg)['routed'] is False
-diff --git a/tests/agent/test_grok_effort_profile_scope.py b/tests/agent/test_grok_effort_profile_scope.py
-new file mode 100644
-index 0000000000000000000000000000000000000000..61e1c2aa35f9ca38ed23aa212c9864fc6872ace1
---- /dev/null
-+++ b/tests/agent/test_grok_effort_profile_scope.py
-@@ -0,0 +1,16 @@
-+"""Task-specific effort must reach xAI only for the profile that opted in."""
-+import json
-+from agent.transports.codex import _resolve_reasoning, _reasoning_fields
-+
-+
-+def test_task_effort_uses_own_profile_optin_a_b_a(tmp_path, monkeypatch):
-+    homes=[tmp_path/'work',tmp_path/'other']
-+    for h,optin in zip(homes,[True,False]):
-+        h.mkdir();(h/'config.yaml').write_text(json.dumps({'agent':{'grok47_reasoning_effort':optin}}))
-+    for home,expected in [(homes[0],True),(homes[1],False),(homes[0],True)]:
-+        monkeypatch.setenv('HERMES_HOME',str(home))
-+        params={'is_xai_responses':True,'reasoning_config':{'enabled':True,'effort':'low'}}
-+        effort,enabled=_resolve_reasoning('grok-4.7',params)
-+        fields=_reasoning_fields('grok-4.7',params,effort=effort,enabled=enabled,replay_encrypted_reasoning=False,is_xai_responses=True,is_github_responses=False)
-+        assert ('reasoning' in fields) is expected
-+        if expected:assert fields['reasoning']['effort']=='low'
 diff --git a/tests/cron/test_cron_default_reasoning.py b/tests/cron/test_cron_default_reasoning.py
 new file mode 100644
 index 0000000000000000000000000000000000000000..aafe8a631975e0099ec229f910ceab77e6e45bcc
