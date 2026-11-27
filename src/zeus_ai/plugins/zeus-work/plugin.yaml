@@ -7,9 +7,7 @@ provides_hooks:
   - pre_llm_call
   - post_llm_call
   - on_session_end
-  - post_gateway_processing
-  - post_gateway_admission
-  - post_gateway_intake
+  - pre_gateway_dispatch
   - transform_llm_output
 provides_middleware:
   - tool_execution

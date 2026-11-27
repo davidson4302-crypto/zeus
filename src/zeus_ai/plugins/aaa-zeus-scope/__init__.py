@@ -11,5 +11,4 @@ def register(ctx):
     sys.modules.setdefault("zeus_scope",scope)
     ctx.register_hook("pre_llm_call",scope.bind)
     ctx.register_hook("on_session_end",scope.clear)
-    ctx.register_hook("post_gateway_admission",scope.admit_gateway)
     ctx.register_hook("pre_tool_call",scope.guard_private_tools)

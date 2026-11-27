@@ -196,11 +196,14 @@ def social_ping(home, *, user_message='', platform='', session_id='', turn_autho
     if str(getattr(platform, 'value', platform)).lower() in ('cron', 'tool', 'system'):
         return False
     try:
-        from gateway.delivery_attempts import current_source_event
-        event = current_source_event()
-        if any(getattr(event, k, None) for k in ('media_urls', 'reply_to_message_id', 'reply_to_text')):
+        engine = str(Path(__file__).resolve().parents[2] / 'engine')
+        if engine not in sys.path:
+            sys.path.insert(0, engine)
+        import zeus_hermes
+        event = zeus_hermes.current_event()
+        if event is None or any(getattr(event, k, None) for k in ('media_urls', 'reply_to_message_id', 'reply_to_text')):
             return False
-    except (ImportError, RuntimeError):
+    except Exception:
         return False
     st = _STATE.get(str(Path(home).resolve()))
     try:

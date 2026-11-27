@@ -530,8 +530,7 @@ class Native:
 
     def monitor_snapshot(self, ident):
         """Only an admitted occurrence changes the native monitor's observed value."""
-        from cron import monitor, monitor_observations as observations
-        from cron.reviewed_retry import job_version
+        from cron import monitor
         decision = self.preflight(ident)
         if decision.get("wakeAgent") is True:
             return canonical(decision)
@@ -539,9 +538,7 @@ class Native:
             record = self.store.get(ident)
             job = jobs.get_job(record["schedule"]["job_id"])
             require(job is not None, "Native monitor job is missing.")
-            recent = observations.latest_observation(job["id"], job_version(job))
-            if recent and recent["state"] in {"pending", "skipped", "committed"}:
-                return recent["output"]
+            # Public Hermes keeps no per-tick observation log, so only the sleeping baseline is accepted here.
             require((job.get("monitor_state") or {}).get("last_output_hash") == monitor.hash_monitor_output(SLEEP_SNAPSHOT),
                     "An unadmitted tick cannot establish a new native monitor baseline.")
             return SLEEP_SNAPSHOT
@@ -945,76 +942,16 @@ def deadline_reply_key(text):
 
 
 def native_deadline_send(home, origin, operation_id, content):
-    """Use the existing hermes send tool and its native operation key and receipts."""
-    from gateway.session_context import set_session_vars, clear_session_vars
-    from gateway.delivery_attempts import enabled
-    from tools.approval_context import set_current_observability_context, reset_current_observability_context
-    try:
-        from gateway.outbound.send import send_message_tool, prepare_send_message_platforms, _resolve_platform_config
-    except ImportError:   # older Hermes
-        from tools.send_message_tool import send_message_tool, prepare_send_message_platforms, _resolve_platform_config
-    from gateway.config import load_gateway_config
-    from gateway.authz_mixin import _coerce_allow_set
-    from gateway.platforms._shared import extra_or_secret
-    from hermes_cli.config import load_config_readonly
-    from hermes_cli.send_cmd import _load_hermes_env
-    from cron.delivery_queue import deliver_gate
-    from .owner import Identities
+    """A timed return to the owner is refused on public Hermes.
 
-    with native_scope(home):
-        _load_hermes_env()
-        prepare_send_message_platforms()
-        current_config = load_config_readonly()
-        require((current_config.get("cron") or {}).get("deliver_gate") is True,
-                "The existing Zeus delivery policy is unavailable.")
-        settings = (((current_config.get("plugins") or {}).get("entries") or {}).get("zeus-work") or {}).get("settings") or {}
-        identities = Identities(settings.get("owner") or {})
-        require(identities.is_owner_account("photon", origin["author_id"]), "Original owner no longer authorized.")
-        _, config, _, error = _resolve_platform_config("photon", load_gateway_config())
-        require(not error and enabled(config, {"hermes_profile": home.name}),
-                "Original private transport or its durable journal is unavailable.")
-        extra = config.extra or {}
-        allowed = extra_or_secret(extra, "allowed_users", "PHOTON_ALLOWED_USERS", default=extra.get("allow_from") or "")
-        require(_coerce_allow_set(allowed) == {origin["author_id"]}, "Original private route is no longer authorized.")
-        job = {"id": operation_id, "deliver": "photon:" + origin["chat_id"]}
-        # Use the scheduled policy here. This command runs independently of the user's chat turn.
-        hold = deliver_gate(job, content)
-        if hold is not None:
-            return {"held": True, "deliver_after": hold}
-        scope = set_session_vars(profile=home.name, cron_session="1")
-        ids = set_current_observability_context(turn_id=origin["turn_id"], tool_call_id=operation_id,
-                                                session_id=origin["session_id"])
-        try:
-            data = json.loads(send_message_tool({"action": "send", "target": job["deliver"], "message": content}))
-            if data.get("hold_id"):
-                # Closing between the two native gate reads may park an unsent
-                # copy. Cancel it before the owner of this work can defer its check.
-                from cron.delivery_queue import cancel_execution
-                cancelled = cancel_execution(data["hold_id"], "Timed work owns the held return")
-                if cancelled.get("prevented"):
-                    return {"held": True, "deliver_after": data["deliver_after"]}
-            return data
-        finally:
-            reset_current_observability_context(ids)
-            clear_session_vars(scope)
+    Sending it safely needs a durable per-send journal (so an uncertain send is never repeated and a sent one can
+    be proven). Public Hermes v0.23.4 has no such journal for send_message, so this fails closed: nothing is sent,
+    and the caller records the work as needing the owner instead."""
+    require(False, "Timed returns need a durable send journal that this Hermes does not have; nothing was sent.")
 
 
 def deadline_receipt(home, origin, operation_id, attempt_id=None):
-    from gateway.delivery_attempts import find_attempts, lookup_attempt
-
-    with native_scope(home):
-        try:
-            rows = [lookup_attempt(attempt_id)] if attempt_id else find_attempts(runtime_profile=home.name)
-        except (OSError, sqlite3.Error):
-            return None
-    for row in rows:
-        if not row:
-            continue
-        route = row["route"]
-        if (route.get("operation_id") == operation_id and route.get("platform") == "photon"
-                and route.get("chat_id") == origin["chat_id"] and route.get("transport_profile") == home.name
-                and route.get("runtime_profile") == home.name):
-            return row
+    """No durable send journal on public Hermes: there is never a receipt to find (fail closed)."""
     return None
 
 

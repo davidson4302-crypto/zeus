@@ -219,31 +219,15 @@ def read_page(sandbox,tab,kind):
     return page
 
 def trusted_sessions():
-    import subprocess
-    python=_AGENT_DIR/'venv/bin/python'
-    reader="import pathlib,sys,yaml,json; cfg=yaml.safe_load(pathlib.Path(sys.argv[1]).read_text()); print(json.dumps(cfg['plugins']['entries']['zeus-work']['settings']['owner']['owner_ids']))"
-    result=subprocess.run([str(python),'-IB','-c',reader,str(PROFILE/'config.yaml')],capture_output=True,timeout=5)
-    require(result.returncode==0,'Unable to verify the configured owner identity.')
-    owners=set(json.loads(result.stdout))
+    """Direct-chat sessions from the owner, by Zeus's one owner test (engine/zeus_hermes.py)."""
+    if str(ENGINE) not in sys.path:
+        sys.path.insert(0, str(ENGINE))
+    import zeus_hermes
+    owners=zeus_hermes.owner_ids()
+    require(owners,'Unable to verify the configured owner identity.')
     with contextlib.closing(sqlite3.connect(f'file:{PROFILE}/state.db?mode=ro',uri=True)) as con:
         return {sid for sid,source,uid in con.execute("SELECT id,source,user_id FROM sessions WHERE chat_type='dm'")
-                if f'{source}:{uid}' in owners}
-
-def local_operator_row(profile, raw, session, message_id):
-    # Only the authenticated LOCAL transport writes this receipt. Ordinary agent/terminal relays
-    # can appear inside the same shared transcript and must not become purchase approval.
-    if not re.fullmatch(r'[A-Za-z0-9_-]{16,80}',message_id or '') or raw.lstrip().startswith('['):
-        return False
-    path=profile/'runtime/shared_conversation_requests'/(message_id+'.json')
-    try:
-        receipt=json.loads(path.read_text())
-    except (OSError,ValueError):
-        return False
-    source=receipt.get('source')
-    if source not in ('cli','gui','tui') or receipt.get('request_id')!=message_id or receipt.get('session_id')!=session:
-        return False
-    expected=hashlib.sha256(json.dumps([profile.name,raw,source,[]]).encode()).hexdigest()
-    return receipt.get('status') in ('queued','running','completed') and receipt.get('fingerprint')==expected
+                if zeus_hermes.surface(source)==zeus_hermes.owner_platform() and zeus_hermes.normalize_id(uid) in owners}
 
 def owner_rows(after,now):
     rows=engine('chats').messages(max(after,now-900),until=now+0.001,path=PROFILE/'state.db',include_terminal=True)
@@ -256,7 +240,7 @@ def owner_rows(after,now):
                                (r['id'],r['session'],'user')).fetchone()
             if not source:continue
             raw,msg_id=source
-            if (r['session'] in dm and not raw.lstrip().startswith('[')) or local_operator_row(PROFILE,raw,r['session'],msg_id):
+            if r['session'] in dm and not raw.lstrip().startswith('['):
                 allowed.add(r['id'])
     return [r for r in rows if r['who']=='zeus' or r['id'] in allowed]
 

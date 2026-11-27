@@ -144,9 +144,10 @@ profile's `platforms.photon.extra` turns it on:
 - **Status stickers** (optional). Small stickers such as "Need your OK", "Pick one", "Reminder set" or
   "Price dropped" on your message, placed only from saved records and never during quiet hours.
   They stay off unless a settings file at `~/.config/photon-status-stickers/<project>-<port>.json`
-  turns them on. On v0.23.4 most of them stay inert: they read a per-send delivery journal and an
-  owner-admission record that this Hermes version does not write. A missing or broken sticker bundle
-  never stops the iMessage connection.
+  turns them on. Zeus setup never writes that file, so they are **off by default**, and they should stay
+  off on public Hermes v0.23.4: they read a per-send delivery journal and an owner-admission record that
+  this Hermes version does not write, so they would never place a sticker. A missing or broken sticker
+  bundle never stops the iMessage connection.
 - **Quiet a recipient's automatic tapbacks** on a shared line (`automatic_reactions_ignored_users`).
 - **Stream refresh.** A long-quiet inbound stream is refreshed in place instead of restarting the
   whole connection, and outbound sends stay available. The quiet check moves from 10 minutes to

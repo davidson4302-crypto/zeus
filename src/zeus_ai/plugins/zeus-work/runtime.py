@@ -16,6 +16,7 @@ _ENGINE = Path(__file__).resolve().parents[2] / "engine"
 if str(_ENGINE) not in _sys.path:
     _sys.path.insert(0, str(_ENGINE))
 import settings  # noqa: E402
+import zeus_hermes  # noqa: E402  (Zeus's one owner test)
 
 GUIDANCE = "For a substantive multistep request, create one zeus_work record from this native user turn. Reuse its ID and existing external task reference. For an existing flight watch use its life-flight external reference, or schedule remaining watch steps with flight_watch_id. Save checked checkpoints; schedule native continuation before promising later work. Corrections revise the same job. STOP persists. Verify actual final artifact bytes against the original criteria before completion. Prepared, accepted and delivered are different. Reconcile uncertain effects; never resend. Status and doctor retain ownership. These are execution records, not a separate task queue."
 DEADLINE_READ_TOOLS = {
@@ -170,11 +171,13 @@ class Runtime:
         self.registered_home=home()  # admission hooks may run under another profile's context
 
     def owner_source(self,source):
-        """The owner, by native provenance only: local operator, their private DM audience or their own account."""
-        if not self.identities.configured or not isinstance(source,dict):return False
-        if source.get('origin') in {'local_operator','desktop_submit'}:return self.identities.local_is_owner
-        if (source.get('audience') or {}).get('kind')=='private_owner':return True
-        return self.identities.is_owner_account(source.get('platform'),source.get('author_id'))
+        """The owner, by Zeus's one owner test: a local operator only when Zeus allows the CLI, else the owner's own
+        direct chat on the owner platform. Anything unknown is not the owner."""
+        if not isinstance(source,dict):return False
+        if source.get('origin') in {'local_operator','desktop_submit'}:return zeus_hermes.allow_cli()
+        if (source.get('audience') or {}).get('kind')!='private_owner' or source.get('origin')!='direct':return False
+        return zeus_hermes.is_owner_source({'platform':source.get('platform'),'chat_type':'dm',
+                                            'chat_id':source.get('chat_id'),'user_id':source.get('author_id')})
 
     def stop_records(self,records,source,ids=(),where=None):
         where=where or home();store=Store(where);native=Native(where);results=[]
@@ -191,27 +194,23 @@ class Runtime:
         return results
 
     def admission(self,event=None,gateway=None,**kwargs):
-        """post_gateway_admission: the owner's plain stop, in any chat, even one that is busy.
+        """pre_gateway_dispatch: the owner's plain stop, in any chat, even one that is busy.
 
         Runs before the busy/steer path, so a stop typed into a busy chat still stops saved
-        work durably. Never refuses or delays the message."""
+        work durably. Never refuses or delays the message. Only Zeus's owner test decides who
+        the owner is; anything unknown is not the owner."""
         try:
-            from .owner import stop_kind,LOCAL_PLATFORMS
-            source=getattr(event,'source',None)
-            if event is None or getattr(event,'internal',False) or source is None or getattr(source,'is_bot',True) is not False:return None
-            if not self.identities.configured:return None
-            platform=str(getattr(getattr(source,'platform',None),'value','') or '').lower()
-            owner=(self.identities.local_is_owner if platform in LOCAL_PLATFORMS else
-                   True if platform=='agentmail' else self.identities.is_owner_account(platform,getattr(source,'user_id',None)))
-            if not owner:return None
+            from .owner import stop_kind
+            if not zeus_hermes.is_owner_event(event):return None
+            source=event.source
+            platform=zeus_hermes.surface(source.platform)
             text = str(getattr(event, "text", "") or "")
             ids = re.findall(r"work_[a-f0-9]{12}", text, re.I)
             stopping = stop_kind(re.sub(r"work_[a-f0-9]{12}", "", text, flags=re.I).strip())
             if not stopping:
                 return None
-            from gateway.session_identity import identity_of
-            identity=identity_of(source)
-            if identity is None or identity.runtime_home.resolve()!=self.registered_home:return None
+            from hermes_constants import get_hermes_home
+            if Path(get_hermes_home()).resolve()!=self.registered_home:return None
             stop_source={'origin':'owner_admission','platform':platform,'author_id':source.user_id,
                          'chat_id':source.chat_id,'text':str(event.text or '')[:500],'at':now()}
             self.stop_records(Store(self.registered_home).all(),stop_source,ids,where=self.registered_home)
@@ -251,31 +250,25 @@ class Runtime:
             return {"action": "skip"}
 
     def deadline_origin(self, event):
-        from gateway.session_identity import identity_of
-        from gateway.shared_conversation import private_owner_source_allowed
+        """The owner's own direct message on the owner platform (Zeus's one owner test), in this profile."""
+        from hermes_constants import get_hermes_home
 
-        source = getattr(event, "source", None)
-        if not source or getattr(event, "internal", True) or getattr(source, "is_bot", True):
+        if not zeus_hermes.is_owner_event(event) or not getattr(event, "message_id", None):
             return None
-        platform = str(getattr(source.platform, "value", source.platform))
-        if platform != "photon" or source.chat_type != "dm" or not event.message_id:
+        if Path(get_hermes_home()).resolve() != self.registered_home:
             return None
-        if not self.identities.is_owner_account(platform, source.user_id):
-            return None
-        identity = identity_of(source)
-        if (identity is None or identity.runtime_home.resolve() != self.registered_home
-                or identity.transport_profile != self.ctx.profile_name or not private_owner_source_allowed(source)):
-            return None
-        return {"platform": platform, "chat_id": source.chat_id, "author_id": source.user_id,
-                "profile": identity.runtime_profile}
+        source = event.source
+        return {"platform": zeus_hermes.surface(source.platform), "chat_id": source.chat_id,
+                "author_id": source.user_id, "profile": self.ctx.profile_name}
 
     def start_deadline(self, store, source, context):
         # Initial native request only. A steered message can supply a preference,
         # and can never create or transfer the request's delivery authority.
-        from gateway.delivery_attempts import current_source_event
         from .native import deadline_plan, deadline_request
 
-        event = current_source_event()
+        if zeus_hermes.owner_turn() is None:
+            return None
+        event = zeus_hermes.current_event()
         if not event or getattr(event, "_gateway_accepted", None) is not True:
             return None
         raw = str(getattr(event, "text", "") or "")
@@ -899,26 +892,6 @@ class Runtime:
                 try:Native(home()).ensure_continuation(r["id"])
                 except Exception as exc:
                     with store.db() as db:store.event(db,r["id"],"automatic_continuation_failed",{"error":str(exc)})
-
-    def gateway_processed(self,event=None,outcome=None,delivery_attempted=False,delivery_succeeded=False,**context):
-        if event is None:return
-        message_id=str(getattr(event,"message_id","") or "")
-        chat_id=str(getattr(getattr(event,"source",None),"chat_id","") or "")
-        if not message_id or not chat_id:return
-        store=Store(home())
-        for original in store.all():
-            target=original.get("foreground_return_source") or {}
-            if str(target.get("message_id") or "")!=message_id or str(target.get("chat_id") or "")!=chat_id:continue
-            if original["state"]!="completed" or original["return_state"] not in {"foreground_response_observed","response_ready_for_transport","foreground_return_incomplete"}:continue
-            with store.db() as db:
-                r=store.load(db,original["id"])
-                if (r["generation"]!=original["generation"] or r["state"]!="completed"
-                        or r.get("foreground_return_source")!=target
-                        or r["return_state"] not in {"foreground_response_observed","response_ready_for_transport","foreground_return_incomplete"}):continue
-                if delivery_attempted:
-                    r["return_state"]="native_adapter_accepted" if delivery_succeeded else "uncertain"
-                r.setdefault("return_receipt",{}).update(gateway_outcome=str(outcome),delivery_attempted=bool(delivery_attempted),native_adapter_succeeded=bool(delivery_succeeded),gateway_observed_at=now(),independent_destination_read=False)
-                store.save(db,r,"foreground_transport_observed",r["return_receipt"])
 
     def transform(self,response_text="",**context):
         binding=self.binding(context)

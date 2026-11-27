@@ -435,12 +435,14 @@ class Extensions:
             delivery = delivery_queue.get_status(receipt["execution_id"])
         if not execution or execution.get("job_id") != saved["job_id"] or execution.get("status") != "completed":
             raise ValueError("The exact native occurrence has not completed")
-        from hermes_state import SessionDB
-        history = SessionDB(db_path=self.home / "state.db", read_only=True)
-        try:
-            messages = history.get_messages(receipt["session_id"], include_compacted=True, limit=100, latest=True)
-        finally:
-            history.close()
+        # Read-only read of the profile's own state.db (its public messages table); no deprecated store API.
+        import sqlite3
+        from contextlib import closing
+        with closing(sqlite3.connect((self.home / "state.db").as_uri() + "?mode=ro", uri=True, timeout=5)) as con:
+            con.row_factory = sqlite3.Row
+            messages = [dict(r) for r in con.execute(
+                "SELECT id, role, content FROM messages WHERE session_id=? ORDER BY id DESC LIMIT 100",
+                (receipt["session_id"],))]
         matches = [row for row in messages if row.get("role") == "assistant" and isinstance(row.get("content"), str) and digest(row["content"]) == receipt["response_sha256"]]
         if len(matches) != 1 or len(matches[0]["content"]) > 65536:
             raise ValueError("Native final-history match is absent, ambiguous or exceeds the bounded result reader")

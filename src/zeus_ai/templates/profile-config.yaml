@@ -4,7 +4,6 @@ model:
   default: ${chat_model}
   provider: ${model_provider}
 agent:
-  human_request_priority: true
   reasoning_effort: medium
   turn_liveness:
     timeout_s: 600.0
@@ -86,9 +85,6 @@ platforms:
       link_bubbles: true
       durable_delivery: true
     gateway_restart_notification: false
-shared_conversation:
-  enabled: true
-  private_owner_only: true
 browser:
   cdp_url: "http://127.0.0.1:${chrome_port}"
   action_receipts:

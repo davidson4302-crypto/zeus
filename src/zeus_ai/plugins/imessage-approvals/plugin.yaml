@@ -4,7 +4,7 @@ description: Approval requests over the agent's own iMessage line. Only the owne
 author: Zeus contributors
 license: MIT
 provides_hooks:
-  - post_gateway_admission
+  - pre_gateway_dispatch
 config_schema:
   enabled:
     type: bool

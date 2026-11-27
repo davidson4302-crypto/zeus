@@ -69,21 +69,21 @@ def opening(source, text):
     return squash(RELAY_PREFIX.sub("", text), 320)
 
 
-OWNER_SOURCES = {"cli", "tui", "gui", "desktop", "local", "claude-code", "cron"}
 INTERNAL_SOURCES = {"agentmail", "claude-code", "cron", "cli", "tui", "gui", "desktop", "local"}
 
 
-def audience_of(in_bot_chat, source):
+def audience_of(is_owner, source):
     """Who is on the other end of THIS turn, which decides what recall may show.
 
-    owner: the owner's shared chat, their terminal hand-offs, or the agent's own scheduled job: everything.
-    mail: someone else's email to the inbox: the agent's own work, never the owner's private chat.
-    person: anyone else (a rep in Slack, a channel): only that same person's or chat's sessions.
+    owner: only when Zeus's one owner test (engine/zeus_hermes.py) says the owner sent this turn: everything.
+    mail: an email to the inbox or the agent's own scheduled job: the agent's own work, never the owner's
+    private chat.
+    person: anyone else (a rep in Slack, a channel, an unknown source): only that same person's or chat's sessions.
     """
     source = str(source or "").lower()
-    if in_bot_chat or source in OWNER_SOURCES:
+    if is_owner is True:
         return "owner"
-    return "mail" if source == "agentmail" else "person"
+    return "mail" if source in ("agentmail", "cron") else "person"
 
 
 def visible(audience, title, source, user, chat, kind, here_user, here_chat, here_type):
@@ -119,7 +119,7 @@ def text_rows(db, session_id, since, limit, until=None):
         "ORDER BY id DESC LIMIT ?", (session_id, since, until or time.time() + 60, limit)).fetchall()[::-1]
 
 
-def digest(home, session_id, *, now=None):
+def digest(home, session_id, *, now=None, is_owner=False):
     now = time.time() if now is None else now
     since = now - WINDOW_HOURS * 3600
     path = Path(home) / "state.db"
@@ -133,7 +133,7 @@ def digest(home, session_id, *, now=None):
         here = db.execute("SELECT source, user_id, chat_id, chat_type FROM sessions WHERE id=?",
                           (session_id,)).fetchone() if session_id else None
         here_source, here_user, here_chat, here_type = here or ("", None, None, None)
-        audience = audience_of(in_bot_chat, here_source)
+        audience = audience_of(is_owner, here_source)
         sessions = db.execute(
             "SELECT id, source, title, COALESCE(last_activity_at, started_at) AS active, user_id, chat_id, chat_type "
             "FROM sessions WHERE COALESCE(last_activity_at, started_at)>=? AND started_at<=? "
@@ -191,9 +191,20 @@ def register(ctx):
         if parent_session_id or turn_display_kind is not None or Path(get_hermes_home()).resolve() != home:
             return None  # Subagents and display-only turns get nothing; never read another profile.
         try:
-            text = digest(home, session_id)
+            is_owner = _zeus_hermes().owner_turn() is not None
+            text = digest(home, session_id, is_owner=is_owner)
         except (sqlite3.Error, OSError):
             return None
         return {"context": text} if text else None
 
     ctx.register_hook("pre_llm_call", before_turn)
+
+
+def _zeus_hermes():
+    """Zeus's one owner test (zeus_ai/engine/zeus_hermes.py)."""
+    import sys
+    engine = str(Path(__file__).resolve().parents[2] / "engine")
+    if engine not in sys.path:
+        sys.path.insert(0, engine)
+    import zeus_hermes
+    return zeus_hermes

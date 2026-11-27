@@ -207,11 +207,20 @@ def register(ctx):
             return None
         if isinstance(turn_author,dict) and turn_author.get('is_bot') is True:
             return None
-        from gateway.session_context import get_session_env
-        if get_session_env('HERMES_CRON_SESSION','')=='1':
-            return None  # Owner recall must not spill into an automated job's different destination.
-        from gateway.delivery_attempts import current_source_event
+        zh=_zeus_hermes()
+        if zh.owner_turn() is None:
+            return None  # Owner recall only in the owner's own turn (never a job, a helper or another sender).
         return context_for(home,profile,settings,platform=value(platform),
-                           source_event=current_source_event(),history=conversation_history)
+                           source_event=zh.current_event(),history=conversation_history)
 
     ctx.register_hook('pre_llm_call',before_turn)
+
+
+def _zeus_hermes():
+    """Zeus's one owner test (zeus_ai/engine/zeus_hermes.py)."""
+    import sys
+    engine=str(Path(__file__).resolve().parents[2]/'engine')
+    if engine not in sys.path:
+        sys.path.insert(0,engine)
+    import zeus_hermes
+    return zeus_hermes

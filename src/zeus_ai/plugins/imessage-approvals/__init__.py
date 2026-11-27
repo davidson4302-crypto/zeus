@@ -122,13 +122,10 @@ class Hub:
                 return None
         except Exception:
             return None
-        if identity.runtime_profile == identity.transport_profile:
-            # The agent's own line: the gateway's private-owner check must also pass. A line shared
-            # through gateway.profile_routes is pinned to this exact handle and chat instead.
-            from gateway.shared_conversation import private_owner_source_allowed
-            if not private_owner_source_allowed(source):
-                log.warning("imessage-approvals: private-owner check refused a coded reply")
-                return None
+        # Zeus's one owner test must also pass: the owner's own direct chat on the owner platform.
+        if not _zeus_hermes().is_owner_event(event):
+            log.warning("imessage-approvals: owner check refused a coded reply")
+            return None
         return source
 
     async def admit(self, event=None, gateway=None, **kwargs):
@@ -321,7 +318,8 @@ def register(ctx):
     hub = Hub(profile, settings, store)
     registry().HUBS[profile] = hub
     register_flow(profile, "dryrun", Hub.dryrun)
-    ctx.register_hook("post_gateway_admission", hub.admit)
+    # pre_gateway_dispatch: a coded or plain approval reply is handled here and skipped from the agent turn.
+    ctx.register_hook("pre_gateway_dispatch", hub.admit)
 
     def unload():
         hub.closed = True
@@ -330,3 +328,12 @@ def register(ctx):
     ctx.on_unload(unload)
     log.info("imessage-approvals ready for %s (%s line, handle ...%s)", profile, settings["transport_profile"],
              settings["handle"][-4:])
+
+
+def _zeus_hermes():
+    """Zeus's one owner test (zeus_ai/engine/zeus_hermes.py)."""
+    engine = str(Path(__file__).resolve().parents[2] / "engine")
+    if engine not in sys.path:
+        sys.path.insert(0, engine)
+    import zeus_hermes
+    return zeus_hermes

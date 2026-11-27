@@ -251,8 +251,8 @@ class OwnMail:
         """Conservative native direct-owner source. No model-supplied approval flags."""
         try:
             from agent.subagent_lifecycle import get_active_subagent_parent
-            from gateway.delivery_attempts import current_source_event
             from hermes_constants import get_hermes_home
+            zh = _zeus_hermes()
             parent = get_active_subagent_parent()
             sid, tid = context.get('session_id'), context.get('turn_id')
             with self.lock:
@@ -273,21 +273,9 @@ class OwnMail:
             override = getattr(parent, '_persist_user_message_override', None)
             if (override if override is not None else latest.get('content')) != text:
                 return
-            event = current_source_event()
-            platform = str(getattr(getattr(parent, 'platform', None), 'value', getattr(parent, 'platform', '')))
-            if event is None:
-                if platform not in {'cli', 'tui'} or getattr(parent, '_turn_author', None) or getattr(parent, '_user_id', None):
-                    return
-            else:
-                from gateway.session_identity import identity_of
-                from gateway.shared_conversation import private_owner_source_allowed
-                source = getattr(event, 'source', None)
-                identity = identity_of(source) if source else None
-                if (getattr(event, 'internal', True) is not False or getattr(event, '_gateway_accepted', None) is not True
-                        or not source or getattr(source, 'is_bot', True) is not False or identity is None
-                        or identity.runtime_profile != self.profile or identity.runtime_home.resolve() != self.home
-                        or identity.adapter() is None or not private_owner_source_allowed(source)):
-                    return
+            # Zeus's one owner test: the owner's own direct chat, or a local CLI turn when Zeus allows it.
+            if zh.owner_turn() is None:
+                return
             with self.lock:
                 self.turns[(sid, tid)] = text
                 while len(self.turns) > 128:
@@ -299,7 +287,7 @@ class OwnMail:
         try:
             from agent.subagent_lifecycle import get_active_subagent_parent
             parent = get_active_subagent_parent()
-            if not parent or getattr(parent, '_interrupt_requested', False):
+            if not parent or getattr(parent, '_interrupt_requested', False) or _zeus_hermes().owner_turn() is None:
                 return False
             with self.lock:
                 text = self.turns.get((parent.session_id, parent._current_turn_id), '')
@@ -507,3 +495,12 @@ def register(ctx):
         if registry.FLOWS.get((mail.profile, FLOW)) == mail.decide:
             registry.FLOWS.pop((mail.profile, FLOW), None)
     ctx.on_unload(unload)
+
+
+def _zeus_hermes():
+    """Zeus's one owner test (zeus_ai/engine/zeus_hermes.py)."""
+    engine = str(Path(__file__).resolve().parents[2] / 'engine')
+    if engine not in sys.path:
+        sys.path.insert(0, engine)
+    import zeus_hermes
+    return zeus_hermes

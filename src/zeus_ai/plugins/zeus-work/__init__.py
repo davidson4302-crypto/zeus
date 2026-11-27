@@ -48,13 +48,13 @@ def register(ctx):
         ctx.register_hook("post_llm_call",runtime.after_turn)
         ctx.register_hook("on_session_end",runtime.session_end)
         ctx.register_hook("on_session_end",runtime.sources.clear)
-        ctx.register_hook("post_gateway_processing",runtime.gateway_processed)
-        ctx.register_hook("post_gateway_admission",runtime.admission)
-        ctx.register_hook("post_gateway_intake",runtime.deadline_intake)
+        # pre_gateway_dispatch: the owner's stop first (never consumes), then a timed-work answer (may skip).
+        ctx.register_hook("pre_gateway_dispatch",runtime.admission)
+        ctx.register_hook("pre_gateway_dispatch",runtime.deadline_intake)
         ctx.register_hook("transform_llm_output",runtime.transform)
         ctx.register_middleware("tool_execution",runtime.guard)
         ctx.register_middleware("llm_request",runtime.deadline_clock)
-        ctx.register_system_prompt_section("zeus-work.usage",GUIDANCE,position="after_memory",max_chars=650)
+        ctx.register_system_prompt_section("zeus-work.usage",GUIDANCE,position="after_memory",max_chars=700)
     def setup(parser):
         parser.add_argument("--id",default=None)
         parser.add_argument("--doctor",action="store_true")

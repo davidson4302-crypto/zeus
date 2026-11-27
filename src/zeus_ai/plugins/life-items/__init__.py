@@ -42,6 +42,7 @@ _ENGINE_FOLDER = str(Path(__file__).resolve().parents[2] / 'engine')
 if _ENGINE_FOLDER not in sys.path:
     sys.path.insert(0, _ENGINE_FOLDER)
 import settings  # noqa: E402  (zeus_ai/engine/settings.py: owner, agent and paths)
+import zeus_hermes  # noqa: E402  (zeus_ai/engine/zeus_hermes.py: Zeus's one owner test)
 
 OWNER_WORD = settings.OWNER_FIRST          # how prompts name the owner ("the owner" when no name is configured)
 # Words in the owner's message that only address someone (the owner's own name, the agent's name): never a topic.
@@ -157,23 +158,16 @@ def is_bot_chat(home, session_id) -> bool:
 
 
 def owner_turn(platform, source_event, owner_ids, home=None, session_id=None) -> bool:
-    """True only for the owner: a local chat on this machine, or their own private DM with the agent. A command-line turn
-    counts only inside their one shared conversation (that is how their words arrive from Claude Code or Codex);
-    other command-line one-shots are scripts and helpers."""
-    if source_event is not None and getattr(source_event, 'internal', False):
+    """True only for the owner, by Zeus's one owner test (engine/zeus_hermes.py) on the live turn: their own direct
+    chat on the owner platform, or a local CLI turn when Zeus allows it. ``source_event``, when given, must be that
+    turn's own inbound event. ``owner_ids`` is kept for callers; the owner test reads Zeus's settings itself."""
+    turn = zeus_hermes.owner_turn()
+    if turn is None:
         return False
-    source = getattr(source_event, 'source', None) if source_event is not None else None
-    if source is None:
-        plat = value(platform)
-        return plat in LOCAL or (plat in ('cli', 'local') and home is not None and is_bot_chat(home, session_id))
-    plat = value(getattr(source, 'platform', None))
-    if value(getattr(source, 'chat_type', '')) not in {'dm', 'private'}:
-        return False
-    if plat == 'photon':
-        return recipient(getattr(source, 'chat_id', '')) in set(owner_ids.get('owner_photon') or [])
-    if plat == 'slack' and not str(getattr(source, 'chat_id', '') or '').startswith('D'):
-        return False   # Slack calls a multi-person DM "dm" too; only a one-to-one DM (channel id D...) is private to them
-    return str(getattr(source, 'user_id', '') or '') in set((owner_ids.get('owner_user_ids') or {}).get(plat) or [])
+    if source_event is None:
+        return bool(turn['local'])
+    return (not turn['local'] and zeus_hermes.is_owner_event(source_event)
+            and str(getattr(source_event, 'message_id', '') or '') == turn['message_id'])
 
 
 def company_scope_event(life_home, event, owner_ids, platform, session_id):
@@ -2792,11 +2786,9 @@ def register(ctx):
     reading_by_session = {}   # the same key -> (when, the shared reading of that message), for the reply side
 
     def _owner(platform, session_id):
-        from gateway.delivery_attempts import current_source_event
-        from gateway.session_context import get_session_env
-        if os.environ.get('LIFE_COMPOSE') == '1' or get_session_env('HERMES_CRON_SESSION', '') == '1':
+        if os.environ.get('LIFE_COMPOSE') == '1':
             return False
-        return owner_turn(platform, current_source_event(), owner_ids, home=home, session_id=session_id)
+        return owner_turn(platform, zeus_hermes.current_event(), owner_ids, home=home, session_id=session_id)
 
     def remember_turn(key, message, reading=None):
         cutoff = time.time() - 900
@@ -2835,8 +2827,7 @@ def register(ctx):
             from gateway.session_context import get_session_env
             if get_session_env('HERMES_CRON_SESSION', '') == '1':
                 return None
-            from gateway.delivery_attempts import current_source_event
-            event = current_source_event()
+            event = zeus_hermes.current_event()
             if user_message.strip().startswith('Company for ') and os.environ.get('LIFE_COMPOSE') != '1':
                 result = company_scope_event(life_home, event, owner_ids, platform, session_id)
                 if result:

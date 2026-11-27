@@ -61,11 +61,24 @@ def before_turn(user_message='', parent_session_id='', turn_author=None, turn_di
     text = str(user_message or '').strip()
     if parent_session_id or not text:
         return None
-    from agent.human_request_priority import is_human_turn
-    if is_human_turn(turn_author, turn_display_kind, parent_session_id) and _is_availability_check(text):
+    zh = _zeus_hermes()
+    context = {'turn_author': turn_author, 'turn_display_kind': turn_display_kind}
+    if (zh.is_human_turn(zh.turn_author(context), zh.turn_display_kind(context), parent_session_id)
+            and _is_availability_check(text)):
         return {'context': AVAILABILITY_STYLE}
     return {'context': STYLE}
 
 
 def register(ctx):
     ctx.register_hook('pre_llm_call', before_turn)
+
+
+def _zeus_hermes():
+    """Zeus's shared Hermes bridge (zeus_ai/engine/zeus_hermes.py)."""
+    import sys
+    from pathlib import Path
+    engine = str(Path(__file__).resolve().parents[2] / 'engine')
+    if engine not in sys.path:
+        sys.path.insert(0, engine)
+    import zeus_hermes
+    return zeus_hermes

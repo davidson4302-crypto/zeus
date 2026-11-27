@@ -61,34 +61,6 @@ def owner_mail(message, owners):
     return passed("dmarc") and (passed("spf") or passed("dkim"))
 
 
-def _allow_owner_email_lane():
-    """Owner-only shared chats admit this adapter's verified-owner email lane.
-
-    Only this adapter builds agentmail sources, and it marks a source human (is_bot False) with the
-    fixed ':owner' chat id solely for mail that passed owner_mail(). Every other platform keeps the
-    native check unchanged.
-    """
-    try:
-        import gateway.shared_conversation as shared
-    except Exception:
-        return
-    native = shared.private_owner_source_allowed
-    if getattr(native, "_agentmail_owner_lane", False):
-        return
-
-    def allowed(source):
-        platform = str(getattr(getattr(source, "platform", None), "value", "")).lower()
-        if platform == "agentmail":
-            return (getattr(source, "is_bot", True) is False and getattr(source, "chat_type", None) == "dm"
-                    and str(getattr(source, "chat_id", "")).endswith(OWNER_CHAT_SUFFIX)
-                    and str(getattr(source, "user_id", "")).startswith("agentmail:"))
-        return native(source)
-
-    allowed._agentmail_owner_lane = True
-    shared.private_owner_source_allowed = allowed
-
-
-_allow_owner_email_lane()
 
 
 def timestamp(value):

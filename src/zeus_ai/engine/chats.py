@@ -90,6 +90,16 @@ def forgotten(profile=None):
     return sys.modules[key].Forgotten(profile)
 
 
+def _owner_session(source, user_id) -> bool:
+    """A user row counts as the owner's only by Zeus's one owner test (zeus_hermes.py): the owner platform from the
+    owner's own sender id, or a local app session on this machine. Any other sender or platform is not the owner."""
+    import zeus_hermes
+    surface = zeus_hermes.surface(source)
+    if surface in zeus_hermes.LOCAL_SURFACES or surface in ('desktop', 'gui'):
+        return True
+    return surface == zeus_hermes.owner_platform() and zeus_hermes.normalize_id(user_id) in zeus_hermes.owner_ids()
+
+
 def _connect(path=None):
     con = sqlite3.connect('file:%s?mode=ro' % (path or STORE), uri=True, timeout=10)
     con.row_factory = sqlite3.Row
@@ -100,7 +110,8 @@ def messages(since: float, until: float | None = None, path=None, include_termin
     """The owner's real messages and Zeus's worded replies between two times, oldest first.
     Each: {'id', 'at', 'who', 'text', 'via', 'session'}. 'id' is the store's own row number (stable, citeable)."""
     marks = ','.join('?' * len(SKIP_SOURCES))
-    sql = ('SELECT m.id, m.timestamp, m.role, m.content, m.platform_message_id, m.session_id FROM messages m '
+    sql = ('SELECT m.id, m.timestamp, m.role, m.content, m.platform_message_id, m.session_id, '
+           's.source AS session_source, s.user_id AS session_user FROM messages m '
            'JOIN sessions s ON s.id = m.session_id '
            f'WHERE s.source NOT IN ({marks}) AND m.timestamp >= ? AND m.timestamp < ? '
            '{room}'
@@ -128,6 +139,8 @@ def messages(since: float, until: float | None = None, path=None, include_termin
                 continue
             if r['role'] == 'user':
                 if not r['platform_message_id'] or text.startswith(NOT_HIS):
+                    continue
+                if not _owner_session(r['session_source'], r['session_user']):
                     continue
                 text, via = own_words(text)
                 if not text or (via == 'terminal' and not include_terminal):
