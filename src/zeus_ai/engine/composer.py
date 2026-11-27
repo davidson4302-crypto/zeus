@@ -87,9 +87,9 @@ def violations(text: str) -> list:
 ASK_FREE = 'a question, when nothing here is theirs to decide'
 
 
-def his_to_decide(items: list) -> bool:
+def owners_to_decide(items: list) -> bool:
     """Is anything in this message the owner's call: a prepared decision, or something only they can supply?"""
-    return any(isinstance(it, dict) and bool(it.get('decision_for_him') or it.get('result') in ('needs_decision', 'blocked')) for it in items)
+    return any(isinstance(it, dict) and bool(it.get('decision_for_owner') or it.get('result') in ('needs_decision', 'blocked')) for it in items)
 
 
 def found_in(text: str, items: list) -> list:
@@ -98,7 +98,7 @@ def found_in(text: str, items: list) -> list:
     for it in items:                      # the "?" inside an item's own action link (fresh.action_link) asks nothing
         if isinstance(it, dict) and it.get('link'):
             text = text.replace(str(it['link']), ' ')
-    if '?' in text and not his_to_decide(items):
+    if '?' in text and not owners_to_decide(items):
         found.append(ASK_FREE)
     return found
 
@@ -158,9 +158,9 @@ def word_budget(items: list) -> int:
     be finished) gets room for its numbers."""
     n, total = len(items), 0
     for it in items:
-        needs_him = isinstance(it, dict) and bool(it.get('decision_for_him') or it.get('result') == 'blocked' or it.get('prep'))
-        if needs_him:
-            ready = str((it.get('decision_for_him') or {}).get('ready') or '')
+        needs_owner = isinstance(it, dict) and bool(it.get('decision_for_owner') or it.get('result') == 'blocked' or it.get('prep'))
+        if needs_owner:
+            ready = str((it.get('decision_for_owner') or {}).get('ready') or '')
             total += 45 if len(ready) > 150 else 35      # a prepared draft: its gist and what it commits the owner to
         else:
             total += 25 if not total else 8               # the main thing ~25 words (~140 characters), each other one a clause
@@ -203,7 +203,7 @@ def item_view(key: str, opp: dict) -> dict:
     v = {'item': opp.get('title'), 'urgency': opp.get('urgency'), 'result': p.get('status'), 'headline': p.get('headline'),
          'details': p.get('details')}
     if p.get('decision'):
-        v['decision_for_him'] = p['decision']
+        v['decision_for_owner'] = p['decision']
     if p.get('followups'):
         v['followups'] = [{'when': f.get('when'), 'check': f.get('check')} for f in p['followups']]
     if p.get('prep'):
@@ -494,7 +494,7 @@ def fallback_text(items: list) -> str:
     parts = []
     for it in items:
         line = str(it.get('headline') or it.get('item') or '').strip()      # the headline only: "details" are notes for the writer, never text for the owner
-        d = it.get('decision_for_him')
+        d = it.get('decision_for_owner')
         if d and d.get('ask'):
             line += ' Needs your call: ' + d['ask']
         parts.append(line)

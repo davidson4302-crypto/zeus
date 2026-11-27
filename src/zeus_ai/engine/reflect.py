@@ -52,15 +52,15 @@ class Rules:
                 return r
         return None
 
-    def confirm(self, key, his_words, message_id, **more):
+    def confirm(self, key, owners_words, message_id, **more):
         """The owner's yes. Needs the id of a real message of theirs (checked by the caller against their chat, as `life grant` does)."""
-        if not his_words or message_id in (None, ''):
+        if not owners_words or message_id in (None, ''):
             raise ValueError('a rule is only confirmed with the owner\'s own words and the message they came from')
-        return self._set(key, 'confirmed', 'the owner said yes', his_words=his_words, message_id=message_id,
+        return self._set(key, 'confirmed', 'the owner said yes', owners_words=owners_words, message_id=message_id,
                          confirmed_at=datetime.now().astimezone().isoformat(timespec='seconds'), **more)
 
-    def decline(self, key, his_words=''):
-        return self._set(key, 'declined', 'the owner said no', his_words=his_words)
+    def decline(self, key, owners_words=''):
+        return self._set(key, 'declined', 'the owner said no', owners_words=owners_words)
 
     def unanswered(self, key, why='no answer; never asked again'):
         return self._set(key, 'unanswered', why)

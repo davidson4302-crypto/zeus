@@ -154,7 +154,7 @@ def decisions(con, life, since: float, until: float) -> tuple:
         title = p.get('title') or key
         ap = p.get('approved') if isinstance(p.get('approved'), dict) else None
         if ap:
-            words = f' Their words: "{_one_line(ap.get("his_words"), 200)}".' if ap.get('his_words') else ''
+            words = f' Their words: "{_one_line(ap.get("owners_words"), 200)}".' if ap.get('owners_words') else ''
             add(ap.get('at'), 'approval', f'They said yes to: {_one_line(ap.get("ask") or title, 200)}.{words}', f'item {key}, recorded by {ap.get("by") or "the chat"}',
                 mark=('yes', key))
         cl = p.get('closed') if isinstance(p.get('closed'), dict) else None
@@ -190,7 +190,7 @@ def decisions(con, life, since: float, until: float) -> tuple:
         grants = json.loads((life / 'grants.json').read_text()) if (life / 'grants.json').exists() else {}
         for k, g in (grants.items() if isinstance(grants, dict) else []):
             if isinstance(g, dict):
-                words = g.get('his_words') or g.get('note')
+                words = g.get('owners_words') or g.get('note')
                 add(g.get('said_at') or g.get('at'), 'approval', f'They gave a standing OK: {_one_line(g.get("title") or k, 160)}.' + (f' Their words: "{_one_line(words, 200)}".' if words else ''),
                     f'standing OKs, {k}')
     except (OSError, ValueError, AttributeError):

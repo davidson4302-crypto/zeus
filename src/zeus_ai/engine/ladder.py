@@ -137,12 +137,12 @@ PLAN_LEAD = re.compile(r"^(?:" + re.escape(OWNER) + r"|The owner) (?:plans|inten
 RULE = """
 
 Keeping what the owner said true over time (this comes on top of the rules above):
-- already_learned now shows each kept thing with an id and how firmly it is known. his_rules shows the owner's
+- already_learned now shows each kept thing with an id and how firmly it is known. owners_rules shows the owner's
   standing rules, each with an id.
 - Said again: when a NEW line from the owner says again something that is already in already_learned, return it once
   more as a fact, with text copied exactly from that entry and the owner's new words as the quote. This is the one
   exception to "do not repeat". It is how a thing mentioned once becomes a thing that is known. Never do this for
-  his_rules.
+  owners_rules.
 - Changed or corrected: when a new line from the owner explicitly corrects or changes one of those entries (the same
   person or thing, the same kind of statement, and the words say it is different now: "no, it's the 20th", "she moved
   to Austin", "actually stop doing that"), return the new fact or rule and put the id of each entry it replaces in
@@ -156,7 +156,7 @@ Keeping what the owner said true over time (this comes on top of the rules above
   that entry's id in same_as. Not for a change (that is replaces), and not for a different fact about the same person
   or thing. null otherwise."""
 EXTRA_SCHEMA = {
-    'replaces': {'type': 'array', 'items': {'type': 'string'}, 'description': 'ids from already_learned or his_rules that this explicitly corrects or changes; usually empty'},
+    'replaces': {'type': 'array', 'items': {'type': 'string'}, 'description': 'ids from already_learned or owners_rules that this explicitly corrects or changes; usually empty'},
     'until_words': {'type': ['string', 'null'], 'description': "the owner's exact words for how long it holds (\"this week\"), or null"},
     'same_as': {'type': ['string', 'null'], 'description': 'id from already_learned that this says again in new words, or null'},
 }
@@ -348,7 +348,7 @@ def ask(life, system: str, prompt: str, schema: dict, now) -> tuple:
                          | ({'holds_until': r['expires']} if r.get('expires') else {}))
         d['already_learned'] = shown[-SHOW_LEARNED:]
         prefs = Q._read_json(Path(life) / 'preferences.json', {})
-        d['his_rules'] = [{'id': r['id'], 'text': r['text']} for r in rules(prefs if isinstance(prefs, dict) else {}, now, replaced_rules(rows))][-SHOW_RULES:]
+        d['owners_rules'] = [{'id': r['id'], 'text': r['text']} for r in rules(prefs if isinstance(prefs, dict) else {}, now, replaced_rules(rows))][-SHOW_RULES:]
         new_schema = copy.deepcopy(schema)
         new_schema['properties']['items']['items']['properties'].update(copy.deepcopy(EXTRA_SCHEMA))
         return system + RULE, json.dumps(d, ensure_ascii=False, indent=1), new_schema
@@ -572,12 +572,12 @@ def number_test(life, old):
     if life is None or not on(life):
         return old
 
-    def loose(text, his_text, due, said_at):
-        first = old(text, his_text, due, said_at)
+    def loose(text, owners_text, due, said_at):
+        first = old(text, owners_text, due, said_at)
         if not first:
             return first
         said = datetime.fromtimestamp(said_at, _q().PACIFIC)
-        ok = {v for _, v in _amounts(his_text)} | {float(n) for n in re.findall(r'\d+', his_text)} | {float(said.year), float(said.month), float(said.day)}
+        ok = {v for _, v in _amounts(owners_text)} | {float(n) for n in re.findall(r'\d+', owners_text)} | {float(said.year), float(said.month), float(said.day)}
         if due:
             ok |= {float(n) for n in re.findall(r'\d+', str(due)[:10])}
         return [w for w, v in _amounts(text) if v not in ok]
@@ -668,7 +668,7 @@ def after_check(life, entry: dict, items: list, conv: list, bookmark: int, known
     try:
         his = [{**m, 'text': Q.own_words(m['text'])} for m in conv if m['who'] == 'owner']
         his = [m for m in his if m['text']]
-        his_new = [m for m in his if m['id'] > bookmark]
+        owners_new = [m for m in his if m['id'] > bookmark]
         text_of = {m['id']: m['text'] for m in his}
         session_of = {m['id']: m.get('session') for m in conv}
         asked = [k for k in entry.get('kept') or [] if k.get('kind') in ('fact', 'promise')
@@ -828,7 +828,7 @@ def after_check(life, entry: dict, items: list, conv: list, bookmark: int, known
         for dropped in entry.get('dropped') or []:
             if dropped.get('why') != 'already learned' or dropped.get('kind') != 'fact':
                 continue
-            src = C.quoted_in(dropped.get('quote') or '', his_new, dropped.get('message_id'))
+            src = C.quoted_in(dropped.get('quote') or '', owners_new, dropped.get('message_id'))
             if src is None:
                 continue
             probe = {'kind': 'fact', 'text': dropped.get('text'), 'quote': dropped.get('quote')}

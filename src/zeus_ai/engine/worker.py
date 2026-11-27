@@ -334,8 +334,8 @@ def build_prompt(opp: dict, mandate: dict, now_dt: datetime, prefs_text: str = '
                   'it: prepare it and report it as a decision for them instead. Everything else stays read-and-draft only.\n'
                   + '\n'.join(f'- {x}' for x in ok) + '\nIn your result say plainly what you did and where it can be checked.\n')
         by = (opp.get('decision') or {}).get('granted_by') or {}
-        if by.get('his_words'):
-            extra += 'What they approved then: "%s". Their words: "%s"\n' % (str(by.get('approved_example') or '')[:120], str(by['his_words'])[:200])
+        if by.get('owners_words'):
+            extra += 'What they approved then: "%s". Their words: "%s"\n' % (str(by.get('approved_example') or '')[:120], str(by['owners_words'])[:200])
     fu = opp.get('followup')
     if fu:
         earlier = opp.get('parent_packet') or {}

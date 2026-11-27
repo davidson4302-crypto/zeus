@@ -31,7 +31,7 @@ Things the owner already settled. If the owner tells Zeus "I already spoke to Jo
 not come back as "Jordan, day 5" with a fresh draft. So a loop does not open, and an open one closes, when the owner already
 settled that thread or that person AFTER their newest message in it (`settled`):
   - an earlier life item about the same conversation (one of its real messages, not a bounce or notice in the thread,
-    or the whole thread) that the owner dropped, muted, finished in chat or answered themself (fresh.closed_by_him, the
+    or the whole thread) that the owner dropped, muted, finished in chat or answered themself (fresh.closed_by_owner, the
     engine's own test for that, or a muted family);
   - an earlier dropped item whose closing words, the owner's own, say the owner handled it with that person ("I already spoke to
     Jordan", "disregard Jordan");
@@ -223,7 +223,7 @@ def _headers(m: dict) -> dict:
 
 
 def words_of(m: dict) -> str:
-    """What the writer of this message typed in it, quoted mail and signatures cut (writingstyle.his_words: it works
+    """What the writer of this message typed in it, quoted mail and signatures cut (writingstyle.owners_words: it works
     on anybody's email, not only the owner's)."""
     W = __import__('writingstyle')
     text = str(m.get('messageText') or '')
@@ -231,7 +231,7 @@ def words_of(m: dict) -> str:
         pv = m.get('preview')
         text = str((pv.get('body') if isinstance(pv, dict) else pv) or '')
     import html as _h
-    return W.his_words(_h.unescape(text))
+    return W.owners_words(_h.unescape(text))
 
 
 def is_ack(text: str) -> bool:
@@ -328,14 +328,14 @@ def analyze(mailbox: str, msgs: list, hint: str = '', team_boxes=frozenset(), no
         if not addressed:
             out['why'] = 'the owner is only copied'
             return out
-        his_qs = [_norm(s) for x in out['his'] for s in re.split(r'(?<=[.?!])\s+|\n+', x['text']) if '?' in s]
+        owners_qs = [_norm(s) for x in out['his'] for s in re.split(r'(?<=[.?!])\s+|\n+', x['text']) if '?' in s]
         # The newest message decides. An older question counts only behind a short nudge ("bumping this"): a long
         # newest message that asks nothing is an answer or an update, and it supersedes what came before it
         # (a vendor's full answer to the owner's two questions, after a colleague's "can you help me answer these?").
         newest = addressed[-1]
-        q = asks(newest['text'], skip=his_qs)
+        q = asks(newest['text'], skip=owners_qs)
         if not q and len(newest['text'].split()) <= NUDGE_WORDS:
-            q = next((asks(x['text'], skip=his_qs) for x in reversed(addressed[:-1]) if asks(x['text'], skip=his_qs)), '')
+            q = next((asks(x['text'], skip=owners_qs) for x in reversed(addressed[:-1]) if asks(x['text'], skip=owners_qs)), '')
         if not q:
             out['why'] = 'nothing asked of the owner (an update or FYI)'
             return out
@@ -426,7 +426,7 @@ def promises(his: list, subject: str, people: str, extract) -> list | None:
     if not cands:
         return []
     shown = [{'message': i, 'sent': datetime.fromtimestamp(m['at'], timezone.utc).astimezone(_pacific()).strftime('%A %Y-%m-%d'),
-              'to': people, 'subject': subject, 'his_words': m['text'][:2500]} for i, m in enumerate(cands)]
+              'to': people, 'subject': subject, 'owners_words': m['text'][:2500]} for i, m in enumerate(cands)]
     r = extract(PROMISE_SYSTEM, json.dumps({'emails': shown}, ensure_ascii=False), PROMISE_SCHEMA)
     if r is None or not isinstance(r.get('out'), dict):
         return None
@@ -825,7 +825,7 @@ def _dropped_items(con, life) -> list:
         except ValueError:
             continue
         muted = bool(life) and F.is_muted(life, r['key'])
-        if not (FR.closed_by_him(r['state'], p) or muted):
+        if not (FR.closed_by_owner(r['state'], p) or muted):
             continue
         c = p.get('closed') or {}
         try:
@@ -916,7 +916,7 @@ def settled(con, life, now: float, lps: list) -> dict:
 
 # ---- the lines ------------------------------------------------------------------------------------------------------------
 
-def his_clock(life, now_dt: datetime) -> datetime:
+def owners_clock(life, now_dt: datetime) -> datetime:
     import ownertime as OT
     return now_dt.astimezone(OT.zone(at=now_dt.timestamp(), life=life))
 
@@ -976,12 +976,12 @@ def line_fact(r: dict, today: date, z) -> dict:
         base['their_question'] = _clip(r['what'])
     elif r['kind'] == 'waiting':
         base['short'] = f'{who_} owes you an answer, day {n}'
-        base['his_question'] = _clip(r['what'])
+        base['owners_question'] = _clip(r['what'])
     else:
         thing = _clip(r['what'], 60)
         base['thing'] = thing
         base['short'] = thing + ('' if who_.lower() in thing.lower() else f' for {who_}') + ', ' + (due_words(r['due'], today) if r['due'] else f'day {n}')
-        base['his_words'] = _clip((json.loads(r['payload'] or '{}')).get('quote') or '', 240)
+        base['owners_words'] = _clip((json.loads(r['payload'] or '{}')).get('quote') or '', 240)
         if r['due']:
             base['due'] = r['due']
     return base
@@ -1035,7 +1035,7 @@ def reply_item(con, life, r: dict, line: dict, surface_at: datetime, now_dt: dat
         steps[0]['do'] = (f'Prepare what {settings.OWNER_FIRST} promised {who_} in this email thread ("{thing}"): draft the message the owner would send, with what they said they '
                           'would include. Read the whole thread for everything the owner promised there. Look up anything it needs in the owner\'s mail and CRM first; '
                           'if it needs something only the owner has, say what is missing instead of guessing.')
-        ask_ = str(line.get('his_words') or thing)
+        ask_ = str(line.get('owners_words') or thing)
     opp = {'title': (f"What you promised {who_}: {line['about']}" if promise else f"Reply to {who_}: {line['about']}")[:120],
            'why': f'The owner promised {who_} this {line["day"]} day(s) ago.' if promise else f'{who_} has been waiting {line["day"]} day(s) for the owner\'s answer.',
            'proposed_action': f'Draft the owner\'s reply to {who_} in the owner\'s voice and hold it for the owner\'s yes.', 'action_class': 'message_outside_person',
@@ -1061,10 +1061,10 @@ def _sentence(i: int, x: dict, today: date) -> str:
     if x['kind'] == 'the owner owes them a reply':
         s = f'{i}. {who_} wrote to the owner{about} and has waited {x["day"]} day(s) for the owner\'s reply. They asked: "{x.get("their_question", "")}".'
     elif x['kind'] == 'they owe the owner an answer':
-        s = f'{i}. The owner asked {who_}{about} and has waited {x["day"]} day(s) for an answer. The owner asked: "{x.get("his_question", "")}".'
+        s = f'{i}. The owner asked {who_}{about} and has waited {x["day"]} day(s) for an answer. The owner asked: "{x.get("owners_question", "")}".'
     else:
         when = f'it is {due_words(x["due"], today)}' if x.get('due') else f'the owner said it {x["day"]} day(s) ago and named no day'
-        s = f'{i}. The owner promised {who_}{about}: {x.get("thing", "")}; {when}. The owner\'s words: "{x.get("his_words", "")}".'
+        s = f'{i}. The owner promised {who_}{about}: {x.get("thing", "")}; {when}. The owner\'s words: "{x.get("owners_words", "")}".'
     if x.get('draft_coming'):
         s += ' A reply in the owner\'s voice is being drafted and comes with this note for the owner\'s yes; nothing goes without it.'
     elif x.get('already_on_his_list'):
@@ -1076,7 +1076,7 @@ def plan_lines(con, life, now_dt: datetime, read=None, feed=None, reads_left=Non
     """9am to 8pm the owner's clock: each loop worth a line now becomes its own item (or, for a person waiting on the owner, a
     "reply to X" item with the draft). At most MAX_LINES a day, a loop at most once a day. -> the item keys made."""
     import prefs as F
-    his = his_clock(life, now_dt)
+    his = owners_clock(life, now_dt)
     if not (PLAN_FROM <= (his.hour, his.minute) < PLAN_UNTIL):
         return []
     now, today, z = now_dt.timestamp(), his.date(), his.tzinfo
@@ -1218,8 +1218,8 @@ def cli(args: list, life, db) -> int:
     with closing(db()) as con:
         tables(con)
         rows = con.execute("SELECT * FROM loops WHERE state='open' ORDER BY opened").fetchall()
-        today = his_clock(life, datetime.now(_pacific())).date()
-        z = his_clock(life, datetime.now(_pacific())).tzinfo
+        today = owners_clock(life, datetime.now(_pacific())).date()
+        z = owners_clock(life, datetime.now(_pacific())).tzinfo
         if args[:1] == ['close']:
             try:
                 r = rows[int(args[1]) - 1]

@@ -140,7 +140,7 @@ def open_asks(con) -> list:
     return out
 
 
-def his_reply(words: str, since: float, now: float, life_home):
+def owners_reply(words: str, since: float, now: float, life_home):
     """Their real message to read: the newest one that carries these words, or else simply their newest one, since the
     ask and at most 15 minutes old. -> (message, their later messages) or (None, []) when the owner sent none in that time.
     Raises when the chat store cannot be read. A sandbox must name
@@ -416,9 +416,9 @@ def _granted_words(opp: dict) -> str:
 def _granted_start(con, key: str, opp: dict, attempt: int) -> dict:
     by = (opp.get('decision') or {}).get('granted_by') or {}
     details = {'who': None, 'account': None, 'words': _granted_words(opp), 'ask': None, 'title': str(opp.get('title') or '')[:200],
-               'his_words': by.get('his_words'), 'attempt': attempt}
+               'owners_words': by.get('owners_words'), 'attempt': attempt}
     rec = A.new(con, key, 'granted_step', details, facts_version(opp), why='a step the owner gave a standing OK for')
-    A.move(con, rec['id'], 'approved', 'their standing OK: "%s"' % str(by.get('his_words') or '')[:200])
+    A.move(con, rec['id'], 'approved', 'their standing OK: "%s"' % str(by.get('owners_words') or '')[:200])
     A.move(con, rec['id'], 'sending', 'a background job is being booked to carry it out', attempt=attempt)   # no patience: the harvest step settles it
     _flight.clear()
     _flight.update(con=con, id=rec['id'], title=str(opp.get('title'))[:40])
@@ -630,7 +630,7 @@ def approve(con, r, p: dict, note: str, life_home, close) -> int | None:
         return 2
     asked = A.last(rec, 'asked').get('at') or rec['created']
     try:
-        msg, later = his_reply(note, float(asked), now, life_home)
+        msg, later = owners_reply(note, float(asked), now, life_home)
     except Exception as e:
         print(f'Their messages could not be read just now ({type(e).__name__}), so nothing was recorded and nothing was sent. Try once more in a minute.')
         return 1
@@ -645,7 +645,7 @@ def approve(con, r, p: dict, note: str, life_home, close) -> int | None:
     for m in later:
         took_back = H.read(m['text'])
         if took_back['answer'] in ('no', 'changed') or str(took_back['why']).endswith('not decided yet'):
-            A.note(con, rec['id'], 'their reply was read', reading='taken back', message_id=m['id'], his_words=m['text'][:300])
+            A.note(con, rec['id'], 'their reply was read', reading='taken back', message_id=m['id'], owners_words=m['text'][:300])
             print(f'After that message the owner wrote: "{m["text"][:200]}". So their yes does not stand, and nothing was sent or done. Go by their newest message.')
             return 9
     asks = open_asks(con)
@@ -667,7 +667,7 @@ def approve(con, r, p: dict, note: str, life_home, close) -> int | None:
             named = True
             if pick != 'all':
                 (Path(life_home) / WHICH_FILE).unlink(missing_ok=True)
-    A.note(con, rec['id'], 'their reply was read', reading=reading['answer'], why=reading['why'], message_id=msg['id'], his_words=msg['text'][:300])
+    A.note(con, rec['id'], 'their reply was read', reading=reading['answer'], why=reading['why'], message_id=msg['id'], owners_words=msg['text'][:300])
     if reading.get('tapback') and reading.get('say'):   # a tapback that is not a yes here: what the chat Zeus says (ask once in words, or nothing more)
         print(reading['say'])
         return 9
@@ -704,7 +704,7 @@ def approve(con, r, p: dict, note: str, life_home, close) -> int | None:
         print(f'{len(names)} things are waiting on their word, and their "{msg["text"][:80]}" does not say which: {listing}. Nothing was sent or done. '
               f'Ask them once, in one short line, which one the owner means. When the owner names it, run: {TOOL} approve <that one> "<their new message>".')
         return 9
-    said = {'his_words': msg['text'][:600], 'message_id': msg['id'], 'said_at': msg['at']}
+    said = {'owners_words': msg['text'][:600], 'message_id': msg['id'], 'said_at': msg['at']}
     if rec and rec['kind'] == 'peer_notice':
         said['owner_session'] = msg.get('session')
     if reading['answer'] == 'no':
@@ -737,7 +737,7 @@ def carry_out(con, r, p: dict, rec: dict, said: dict, life_home, close) -> int:
     emailed = rec['kind'] == 'email_reply'
     if rec.get('facts') and rec['facts'] != facts_version(p):
         return _replace_for_facts(con, key, rec, 'something new came in on this after it was prepared', emailed)
-    mirror = {'at': time.time(), 'by': 'zeus chat', 'his_words': said['his_words'], 'ask': decision.get('ask'), 'step': decision.get('ready')}
+    mirror = {'at': time.time(), 'by': 'zeus chat', 'owners_words': said['owners_words'], 'ask': decision.get('ask'), 'step': decision.get('ready')}
     if rec['kind'] == 'peer_notice':
         spec = rec['details']['peer_notice']
         full = peer_state(con,key)
@@ -869,7 +869,7 @@ def _close_sent(con, key: str, rec: dict, close):
     if p.get('closed'):
         return
     receipt = rec.get('receipt') or {}
-    p.setdefault('approved', {'at': A.last(rec, 'approved').get('at'), 'by': 'zeus chat', 'his_words': A.last(rec, 'approved').get('his_words')})
+    p.setdefault('approved', {'at': A.last(rec, 'approved').get('at'), 'by': 'zeus chat', 'owners_words': A.last(rec, 'approved').get('owners_words')})
     p['approved']['send'] = receipt | {'state': 'dry run' if receipt.get('dry') else 'sent'}
     _save(con, key, p)
     row = con.execute('SELECT key,state,payload FROM opps WHERE key=?', (key,)).fetchone()

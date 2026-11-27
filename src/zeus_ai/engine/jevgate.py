@@ -86,7 +86,7 @@ def items_from_observations(text: str) -> list:
             f = fm.group(1)
             if '"he_already_replied": true' in f:
                 flags.append('The owner already replied to this.')
-            if '"sent_by_him": true' in f:
+            if '"sent_by_owner": true' in f:
                 flags.append('The owner sent this themselves.')
             body = body[:fm.start()]
         body = re.sub(r'\n{3,}', '\n\n', body).strip()

@@ -280,7 +280,7 @@ def rules_cmd() -> int:
     said = {'proposed': 'not answered yet', 'confirmed': 'the owner said yes', 'declined': 'the owner said no', 'unanswered': 'no answer, will not be asked again',
             'noted': 'only a note, never asked', 'retired': 'taken back', 'adopted': 'you just do it: nothing in it needs the owner\'s yes'}
     print('\n'.join(f"- [{r.get('key')}] ({said.get(r.get('state'), r.get('state'))}) {r.get('when')} -> {r.get('action')}"
-                    + (f" | the owner's words: \"{r['his_words']}\"" if r.get('his_words') else '') for r in rows if isinstance(r, dict))
+                    + (f" | the owner's words: \"{r['owners_words']}\"" if r.get('owners_words') else '') for r in rows if isinstance(r, dict))
           or 'No standing ways of working yet.')
     return 0
 
@@ -442,7 +442,7 @@ def main(argv=None):
         return rule_cmd(a)
     if cmd == 'grants':
         g = _grants()
-        print('\n'.join(f"- {v.get('title') or k} [{k}]: the owner said \"{v.get('his_words') or v.get('note') or ''}\" ({_when(v.get('said_at') or v.get('at'))})"
+        print('\n'.join(f"- {v.get('title') or k} [{k}]: the owner said \"{v.get('owners_words') or v.get('note') or ''}\" ({_when(v.get('said_at') or v.get('at'))})"
                         for k, v in g.items() if isinstance(v, dict)) or 'No standing OKs. Everything that needs the owner\'s yes still waits for it.')
         return 0
     with closing(db()) as con:
@@ -473,8 +473,8 @@ def main(argv=None):
             pk = p.get('packet') or {}
             view = {'key': r['key'], 'state': state_words(r['state'], p), 'title': p.get('title'), 'why': p.get('why'),
                     'evidence': p.get('evidence'), 'result': pk.get('headline'), 'details': pk.get('details'),
-                    'his_call': pk.get('decision'), 'followups': pk.get('followups'), 'learned': pk.get('learned'),
-                    'told': p.get('told'), 'closed': p.get('closed'), 'his_yes': p.get('approved')}
+                    'owners_call': pk.get('decision'), 'followups': pk.get('followups'), 'learned': pk.get('learned'),
+                    'told': p.get('told'), 'closed': p.get('closed'), 'owners_yes': p.get('approved')}
             # The chat rules do not mention `life approve` yet. This is where the chat Zeus fetches the full prepared
             # step before acting, so the tool says it here, without touching the gated chat rules.
             d = pk.get('decision') or {}
@@ -555,7 +555,7 @@ def main(argv=None):
                 if __import__('research').reminder_unsettled(p, r['key']):   # the same pointer on the path without one-send-on
                     print(__import__('research').reminder_unsettled(p, r['key']))
                 return 3
-            p['approved'] = {'at': time.time(), 'by': 'zeus chat', 'his_words': note, 'ask': decision.get('ask'), 'step': decision.get('ready')}
+            p['approved'] = {'at': time.time(), 'by': 'zeus chat', 'owners_words': note, 'ask': decision.get('ask'), 'step': decision.get('ready')}
             con.execute('UPDATE opps SET payload=?, updated=? WHERE key=?', (json.dumps(p, default=str), time.time(), r['key']))
             con.commit()
             __import__('authority').legacy_yes(con, LIFE, r['key'], note)   # authority.py (switch authority-on): where this yes comes from, written beside it; without the switch nothing
@@ -596,7 +596,7 @@ def main(argv=None):
                       f'Keep taking the owner\'s yes each time: life approve {r["key"]} "<the owner\'s words>".')
                 return 2
             g = _grants()
-            g[fam] = {'at': datetime.now().astimezone().isoformat(), 'note': note, 'his_words': note, 'message_id': said['id'],
+            g[fam] = {'at': datetime.now().astimezone().isoformat(), 'note': note, 'owners_words': note, 'message_id': said['id'],
                       'said_at': said['at'], 'title': str(p.get('title') or '')[:120], 'from_item': r['key']}
             _save_grants(g)
             F.note(LIFE, f"Standing OK for \"{p.get('title')}\" and things of the same kind: \"{note}\"", r['key'])

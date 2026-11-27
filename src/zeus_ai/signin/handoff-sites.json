@@ -32,15 +32,6 @@
    ],
    "start_url": "https://www.southwest.com/myaccount",
    "store": "southwest"
-  },
-  "ralphs": {
-   "name": "Ralphs",
-   "hosts": [
-    "ralphs.com",
-    "login.kroger.com"
-   ],
-   "start_url": "https://www.ralphs.com/signin",
-   "store": "ralphs"
   }
  }
 }

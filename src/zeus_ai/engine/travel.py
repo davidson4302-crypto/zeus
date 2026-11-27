@@ -586,7 +586,7 @@ def approve(con, r, p: dict, words: str, life, close, read_chat=None, now: float
         return 1
     import chats as C
     # The quoted words only help pick among the owner's messages since the ask; when they match none (a tidied typo, a
-    # short "y"), their newest one is read. What they really wrote decides, never the quote (the same rule as onesend.his_reply).
+    # short "y"), their newest one is read. What they really wrote decides, never the quote (the same rule as onesend.owners_reply).
     msg = C.quoted_in(words, msgs) or (msgs[-1] if msgs else None)
     if msg is None:
         print('They have sent no message since they were asked about the trip, so nothing was changed. If they did answer, ask them once more.')
@@ -614,7 +614,7 @@ def approve(con, r, p: dict, words: str, life, close, read_chat=None, now: float
         return 2
     if answer == 'no':
         close(con, r, 'declined', 'zeus chat, the owner\'s no to a trip clock', 'they said no: their clock stays on home time')
-        _mark(life, t['trip'], state='no', his_words=msg['text'][:300])
+        _mark(life, t['trip'], state='no', owners_words=msg['text'][:300])
         print('Recorded their no. Their clock stays on home time and this trip is not asked about again.')
         return 0
     if answer == 'changed':
@@ -631,12 +631,12 @@ def approve(con, r, p: dict, words: str, life, close, read_chat=None, now: float
         return 3
     first, last_day = date.fromisoformat(t['first']), date.fromisoformat(t['last'])
     today = datetime.fromtimestamp(now, ZoneInfo(zone)).date()
-    rec = OT.set_zone(life, zone, place=place, until=last_day, his_words=msg['text'][:300], message_id=msg.get('id'),
+    rec = OT.set_zone(life, zone, place=place, until=last_day, owners_words=msg['text'][:300], message_id=msg.get('id'),
                       starts=first if first > today else None,
                       asked={'item': key, 'ask': t.get('ask'), 'seen': seen[:600], 'told_at': told_at, 'by': 'travel ask'})
     Z._settle_now(life)
     close(con, r, 'done', 'zeus chat, the owner\'s yes to a trip clock', 'they said yes: their clock follows them on this trip', {'zone_set': rec})
-    _mark(life, t['trip'], state='yes', his_words=msg['text'][:300])
+    _mark(life, t['trip'], state='yes', owners_words=msg['text'][:300])
     import enddate as E
     label = OT.label(ZoneInfo(zone))
     print(f'Done. From {E.plain_day(first, today)} through {E.plain_day(last_day, today)} their quiet hours follow {label} time '

@@ -163,7 +163,7 @@ _SOCIAL_LAST = re.compile(r"(?:hi|hello|hey|yo|thanks|you.re welcome|of course|h
 def previous_reply(history, message):
     """The actual preceding reply, whether the native history includes the current user row or not."""
     turns = recent(history)
-    if turns and turns[-1] == ('owner', ' '.join(his_words(message).split())[:HISTORY_CHARS]):
+    if turns and turns[-1] == ('owner', ' '.join(owners_words(message).split())[:HISTORY_CHARS]):
         turns.pop()
     return turns[-1][1] if turns and turns[-1][0] == 'agent' else ''
 
@@ -220,7 +220,7 @@ def social_ping(home, *, user_message='', platform='', session_id='', turn_autho
         return False
 
 
-def his_words(text) -> str:
+def owners_words(text) -> str:
     """A stored message without anything a plugin glued on after it."""
     t = str(text or '')
     cut = min([i for i in (t.find(m) for m in NOT_HIS) if i >= 0] or [len(t)])
@@ -248,7 +248,7 @@ def recent(history, limit=HISTORY) -> list:
         if not isinstance(m, dict) or m.get('role') not in ('user', 'assistant'):
             continue
         text = _text_of(m.get('content'))
-        text = his_words(text) if m.get('role') == 'user' else text.strip()
+        text = owners_words(text) if m.get('role') == 'user' else text.strip()
         if text:
             out.append(('owner' if m.get('role') == 'user' else 'agent', ' '.join(text.split())[:HISTORY_CHARS]))
     return out[-limit:]
@@ -474,7 +474,7 @@ def for_turn(home, *, user_message='', conversation_history=(), turn_id='', sess
         st = _STATE.get(str(Path(home).resolve()))
         if st is None or not on(st['life']):
             return None
-        message = his_words(user_message)
+        message = owners_words(user_message)
         if parent_session_id or turn_display_kind is not None or not message:
             return None
         if isinstance(turn_author, dict) and turn_author.get('is_bot') is True:
@@ -507,7 +507,7 @@ def peek(home, turn_id='', session_id='', message='') -> dict | None:
         st = _STATE.get(str(Path(home).resolve()))
         if st is None:
             return None
-        held = st['cache'].get(key_for(turn_id, session_id, his_words(message)))
+        held = st['cache'].get(key_for(turn_id, session_id, owners_words(message)))
         return held[1] if held else None
     except Exception:
         return None

@@ -162,7 +162,7 @@ _FINDING = {'type': 'object', 'required': ['kind', 'ask_id', 'ask_quote', 'what'
     'what': {'type': 'string', 'description': 'the thing the owner wanted, one short plain sentence that stands on its own'},
     'again_id': {'type': ['integer', 'string', 'null']}, 'again_quote': {'type': ['string', 'null']},
     'zeus_id': {'type': ['integer', 'string', 'null']}, 'zeus_quote': {'type': ['string', 'null']},
-    'now': {'enum': ['still_open', 'done_later', 'he_handled', 'he_dropped', 'on_list', 'waiting_on_him', 'unclear']},
+    'now': {'enum': ['still_open', 'done_later', 'he_handled', 'he_dropped', 'on_list', 'waiting_on_owner', 'unclear']},
     'promised_by': {'type': ['string', 'null'], 'description': 'when Zeus said it would do it by, ISO 8601, or null'},
     'settled_id': {'type': ['integer', 'string', 'null']}, 'settled_quote': {'type': ['string', 'null']},
     'list_entry': {'type': ['string', 'null']},
@@ -206,9 +206,9 @@ For each finding give:
     "he_handled"  the owner did it themself, or said the owner has it
     "he_dropped"  the owner said to drop, ignore or forget it
     "on_list"     it is one of the entries under "On Zeus's list" or "Already scheduled by Zeus" (also one marked "ran"); an entry marked "stuck" does not count
-    "waiting_on_him"  Zeus told the owner it is stuck on something only the owner can do (the owner's sign-in, a code, the owner's choice, the owner's yes) and the owner has not done it
+    "waiting_on_owner"  Zeus told the owner it is stuck on something only the owner can do (the owner's sign-in, a code, the owner's choice, the owner's yes) and the owner has not done it
     "unclear"     you cannot tell
-- settled_id and settled_quote: for done_later the Zeus reply that delivered it (the thing itself, not a promise to do it); for he_handled and he_dropped the owner's own message; for waiting_on_him the Zeus reply that told the owner what it needs from the owner; each with the exact words. null otherwise.
+- settled_id and settled_quote: for done_later the Zeus reply that delivered it (the thing itself, not a promise to do it); for he_handled and he_dropped the owner's own message; for waiting_on_owner the Zeus reply that told the owner what it needs from the owner; each with the exact words. null otherwise.
 - promised_by: when Zeus said it would do it by ("tonight", "by 5", "tomorrow morning"), as ISO 8601 with the offset shown at the top. null when it named no time.
 - list_entry: for on_list, the letter of that entry. null otherwise.
 - whose: "zeus", or "another_agent" when the thing is a team member's job; then agent is that team member's name.
@@ -409,7 +409,7 @@ def read_chat(life, since: float, until: float, path=None):
             if TAPBACK.search(str(m['text'])):
                 m = {**m, 'tapback': _one_line(m['text'], 60)}       # kept so the reader sees it, never used as the owner's words
             else:
-                m = {**m, 'text': T.his_words(m['text'])}
+                m = {**m, 'text': T.owners_words(m['text'])}
         elif str(m['text']).lstrip().startswith('{'):
             continue                                   # a background job's structured answer, not something Zeus said to the owner
         out.append(m)
@@ -691,7 +691,7 @@ def _waiting_on_him(f: dict, last_ask: dict, msgs: list, raw: dict, zeus: dict):
     """Zeus told the owner it needs something only the owner can do (the owner's sign-in, a code, the owner's choice, the owner's yes), and the owner
     has said nothing since (a tapback is not an answer). -> that reply, or None."""
     cands = []
-    sid = raw.get('settled_id') if raw.get('now') == 'waiting_on_him' else None
+    sid = raw.get('settled_id') if raw.get('now') == 'waiting_on_owner' else None
     r = zeus.get(str(sid).strip()) if sid not in (None, '') else None
     if r is not None and r['at'] > f['ask']['at'] and _quoted(raw.get('settled_quote'), r['text'], least=6):
         cands.append(r)
@@ -710,7 +710,7 @@ def _waiting_on_him(f: dict, last_ask: dict, msgs: list, raw: dict, zeus: dict):
 
 
 def _item_state(ctx: dict, f: dict):
-    """Items made from this very ask (from_chat), open or closed. -> ('told' | 'by_him' | 'live', key) or
+    """Items made from this very ask (from_chat), open or closed. -> ('told' | 'by_owner' | 'live', key) or
     (None, None). An item closed some other way, or open but stuck, is NOT evidence that anything was done."""
     con = ctx.get('con')
     if con is None:
@@ -732,14 +732,14 @@ def _item_state(ctx: dict, f: dict):
             return 'told', key
         by = str(closed.get('by') or '')
         if by == 'owner' or by.startswith('zeus chat'):
-            best = ('by_him', key)
+            best = ('by_owner', key)
         elif state in OPEN and _live(state, surface_at, p, ctx['now']) and best[0] is None:
             best = ('live', key)
     return best
 
 
 def _stands(raw: dict, f: dict, last_ask: dict, msgs: list, his: dict, zeus: dict, ctx: dict) -> tuple:
-    """-> (status, why). status: open | fixed | handled_by_him | carried | other_lane | not_to_raise | waiting_on_him |
+    """-> (status, why). status: open | fixed | handled_by_owner | carried | other_lane | not_to_raise | waiting_on_owner |
     told | unclear. "Handled" always needs evidence: done or answered in a real reply, told in a note, handled by the owner in
     the owner's own words, or in hand on the list (live, not stuck)."""
     ask_at = f['ask']['at']
@@ -773,13 +773,13 @@ def _stands(raw: dict, f: dict, last_ask: dict, msgs: list, his: dict, zeus: dic
     if st == 'told':
         f['carried_by'] = key
         return 'told', 'it was already told to the owner by its own item'
-    if st == 'by_him':
-        return 'handled_by_him', 'the owner closed its item themself'
+    if st == 'by_owner':
+        return 'handled_by_owner', 'the owner closed its item themself'
     # waiting on something only the owner can do, and the owner has not done it: not a miss while it waits
     w = _waiting_on_him(f, last_ask, msgs, raw, zeus)
     if w is not None:
         f['waiting'] = {'message_id': w['id'], 'at': w['at'], 'quote': _one_line(w['text'], 200)}
-        return 'waiting_on_him', 'Zeus told the owner it needs something only the owner can do, and the owner has not done it yet'
+        return 'waiting_on_owner', 'Zeus told the owner it needs something only the owner can do, and the owner has not done it yet'
     sid = raw.get('settled_id')
     now_state = raw.get('now')
     if now_state == 'done_later':
@@ -796,7 +796,7 @@ def _stands(raw: dict, f: dict, last_ask: dict, msgs: list, his: dict, zeus: dic
         r = his.get(str(sid).strip())
         if r is not None and r['at'] > ask_at and _quoted(raw.get('settled_quote'), r['text'], least=3):
             f['settled'] = {'by': 'owner', 'message_id': r['id'], 'at': r['at'], 'quote': _one_line(raw.get('settled_quote'), 300)}
-            return 'handled_by_him', 'the owner handled it themself' if now_state == 'he_handled' else 'the owner said to drop it'
+            return 'handled_by_owner', 'the owner handled it themself' if now_state == 'he_handled' else 'the owner said to drop it'
         return 'unclear', 'said to be settled by the owner, but the words given are not in that message (a tapback is not the owner\'s words)'
     # a relay: was it really passed on?
     if relay:
@@ -816,7 +816,7 @@ def _stands(raw: dict, f: dict, last_ask: dict, msgs: list, his: dict, zeus: dic
         if it is not None and it.get('live', True):
             f['carried_by'] = it['key']
             return 'carried', 'it is on the list as its own item, and that item is being worked'
-    if now_state == 'unclear' or now_state not in ('still_open', 'on_list', 'done_later', 'waiting_on_him'):
+    if now_state == 'unclear' or now_state not in ('still_open', 'on_list', 'done_later', 'waiting_on_owner'):
         return 'unclear', 'the reader could not tell where it stands'
     if st == 'live':
         f['carried_by'] = key
@@ -839,7 +839,7 @@ def _stands(raw: dict, f: dict, last_ask: dict, msgs: list, his: dict, zeus: dic
     for m2 in msgs:
         if _his(m2) and m2['at'] > last_ask['at'] and settled_words(m2['text']) and (about & _words(m2['text'])):
             f['settled'] = {'by': 'owner', 'message_id': m2['id'], 'at': m2['at'], 'quote': _one_line(m2['text'], 200)}
-            return 'handled_by_him', 'the owner\'s later words say it is handled or to drop it'
+            return 'handled_by_owner', 'the owner\'s later words say it is handled or to drop it'
     return 'open', 'not done, not answered, not on the list, not settled by the owner'
 
 
@@ -931,7 +931,7 @@ def ledger_findings(con, since: float, until: float, tz) -> tuple:
     for r in rows:
         p, key = r['p'], r['key']
         closed = p.get('closed') if isinstance(p.get('closed'), dict) else {}
-        by_him = str(closed.get('by') or '') == 'owner' or str(closed.get('by') or '').startswith('zeus chat')
+        by_owner = str(closed.get('by') or '') == 'owner' or str(closed.get('by') or '').startswith('zeus chat')
         can = could_go(r)
         # told in the window: was it late?
         if r['told_at'] and since < r['told_at'] <= until and not r['silent']:
@@ -947,7 +947,7 @@ def ledger_findings(con, since: float, until: float, tz) -> tuple:
             signals.append({'at': r['told_at'], 'what': r['title'], 'source': 'ledger', 'ref': 'item:' + key, 'caught_by': r['told_note'] or 'told',
                             'finding': 'late' if f else None})
             continue
-        if r['told_at'] or by_him:
+        if r['told_at'] or by_owner:
             continue
         # never told, and its own time passed in the window
         if r['lands'] and since < r['lands'] <= until and r['first_seen'] < r['lands'] - 3600 and p.get('owner_involved') != 'no' \
@@ -1067,7 +1067,7 @@ def matters(con, life, msgs: list, now_dt: datetime) -> dict:
         if lands is not None and lands > now:
             why.append({'kind': 'deadline', 'at': datetime.fromtimestamp(lands, tz).isoformat(), 'words': 'its own time is ' + _clock(lands, tz)})
         if said is not None:
-            why.append({'kind': 'his_words', 'quote': _one_line(said['text'], 200), 'message_id': said['id'], 'said_at': said['at'],
+            why.append({'kind': 'owners_words', 'quote': _one_line(said['text'], 200), 'message_id': said['id'], 'said_at': said['at'],
                         'words': 'the owner said on %s: "%s"' % (_day_words(said['at'], tz), _one_line(said['text'], 120))})
         if key in waiting:
             why.append({'kind': 'person_waiting', 'words': '%s has waited %d day(s) for the owner\'s reply' % (waiting[key]['person'], waiting[key]['days'])})
@@ -1366,11 +1366,11 @@ def review(con, life, now_dt: datetime, day: date, *, complete=None, chat_path=N
     chat = []
     items, jobs = list_view(con, life, jobs_file, since - RECENT_HOURS * 3600, now)
     if True:
-        day_his = [m for m in msgs if _his(m) and m['at'] >= since and not TEST.search(m['text'])]
-        out['counts']['his_messages'] = len(day_his)
+        day_owners = [m for m in msgs if _his(m) and m['at'] >= since and not TEST.search(m['text'])]
+        out['counts']['owners_messages'] = len(day_owners)
         waiting = [k for k, v in (_json(_meta(con, K_ASKS), {}) or {}).items() if isinstance(v, dict) and v.get('status') in ('too_fresh', 'open', 'unconfirmed')
                    and now - float(v.get('at') or 0) <= MAX_AGE + 86400]
-        if day_his or waiting:
+        if day_owners or waiting:
             complete = complete or _real_complete()
             r = complete(SYSTEM, build_prompt(msgs, since, now_dt, items, jobs), SCHEMA)
             got = r.get('out') if isinstance(r, dict) else None

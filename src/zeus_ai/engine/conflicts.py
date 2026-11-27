@@ -101,7 +101,7 @@ def _decisions() -> tuple:
         if not d.get('id') or not d.get('says'):
             continue
         out.append({'id': 'D-' + str(d['id']).removeprefix('D-'), 'date': str(d['date']),
-                    'his_words': str(d.get('owner_words') or d.get('his_words') or ''), 'find': str(d['find']), 'agrees': agrees,
+                    'owners_words': str(d.get('owner_words') or d.get('owners_words') or ''), 'find': str(d['find']), 'agrees': agrees,
                     'says': str(d['says'])} | ({'needs': str(d['needs'])} if d.get('needs') else {})
                    | ({'mode': str(d['mode'])} if d.get('mode') in ('retire', 'override') else {}))
     return tuple(out)
@@ -265,13 +265,13 @@ def collect(life, now=None, memory=None) -> list:
         when = str(r.get('when') or '').rstrip('.')
         add('S', 'plan', 'plans', text, (f'what {OWNER} set up on {_words_day(d)} for when {when}' if r.get('state') == 'confirmed'
                                          else f'a habit Zeus picked up from mail on {_words_day(d)}: {r.get("kind")}'),
-            d, r.get('his_words'), {'key': r.get('key'), 'pref_text': r.get('pref_text')})
+            d, r.get('owners_words'), {'key': r.get('key'), 'pref_text': r.get('pref_text')})
     grants = _read(life / 'grants.json', {})
     for fam, g in (grants.items() if isinstance(grants, dict) else []):
         if isinstance(g, dict):
             d = _day(g.get('said_at') or g.get('at'))
-            add('G', 'grant', 'grants', f"Standing OK, no need to ask: {g.get('title') or fam}. {OWNER}'s words: \"{g.get('his_words') or g.get('note') or ''}\"",
-                f'{OWNER}\'s standing OK from {_words_day(d)} for {g.get("title") or fam}', d, g.get('his_words'), {'family': fam})
+            add('G', 'grant', 'grants', f"Standing OK, no need to ask: {g.get('title') or fam}. {OWNER}'s words: \"{g.get('owners_words') or g.get('note') or ''}\"",
+                f'{OWNER}\'s standing OK from {_words_day(d)} for {g.get("title") or fam}', d, g.get('owners_words'), {'family': fam})
     refills = _read(life / 'refills.json', {})
     if isinstance(refills, dict) and refills.get('refills'):
         names = ', '.join(str(x.get('name')) for x in refills['refills'] if isinstance(x, dict) and x.get('name'))
@@ -337,7 +337,7 @@ def code_findings(items: list, life) -> list:
             out.append({'key': pair_key([d['id']], [it['fp']]), 'how': 'code', 'side_a': [it['id']], 'side_b': [d['id']],
                         'decision': d['id'], 'subject': d['id'][2:], 'kind': 'contradiction', 'severity': 'medium',
                         'why': (f'{OWNER}\'s own newer words ({_words_day(said)}) mention it after the {_words_day(when)} rule, so code does not decide it'
-                                if newer else f'{OWNER}\'s written rule of {_words_day(when)} ("{d["his_words"]}") is later than this line'),
+                                if newer else f'{OWNER}\'s written rule of {_words_day(when)} ("{d["owners_words"]}") is later than this line'),
                         'clause': [c.strip()[:200] for c in hits if not re.search(d['agrees'], c, re.I)][:2],
                         'state': 'seen' if newer else 'settled', 'action': 'set aside' if whole else 'override'})
     return out
@@ -481,8 +481,8 @@ def set_aside(life, it: dict, key: str, why: str, winner: list, his=None, now=No
     with it. -> what happened, in a word or two."""
     import together as T
     now_dt = _now_dt(now)
-    pointer = {'conflict': key, 'kept': [w['label'] for w in winner], 'his_words': his, 'at': now_dt.isoformat(timespec='seconds')}
-    let_go = {'reason': 'settled', 'by': key, 'why': why, 'kept': pointer['kept'], 'his_words': his, 'at': pointer['at']}
+    pointer = {'conflict': key, 'kept': [w['label'] for w in winner], 'owners_words': his, 'at': now_dt.isoformat(timespec='seconds')}
+    let_go = {'reason': 'settled', 'by': key, 'why': why, 'kept': pointer['kept'], 'owners_words': his, 'at': pointer['at']}
     k, ref = it['kind'], it.get('ref') or {}
     if k in ('boundary', 'do_not_raise'):
         return 'set aside' if T.retire(life, ref['kind'], ref['text'], ref.get('message_id'), why, pointer, now_dt) else 'already set aside'
@@ -516,8 +516,8 @@ def settle(life, f: dict, by_id: dict, winner_ids: list, loser_ids: list, why: s
         if x in by_id:
             done[x] = set_aside(life, by_id[x], f['key'], why, winner, his, now)
     f['outcome'] = {'kept': [w['label'] for w in winner], 'set_aside': {by_id[x]['label']: v for x, v in done.items()},
-                    'why': why, 'his_words': his, 'at': _now_dt(now).isoformat(timespec='seconds')}
-    _log(life, 'settled', f['key'], kept=winner_ids, set_aside=done, why=why, his_words=his)
+                    'why': why, 'owners_words': his, 'at': _now_dt(now).isoformat(timespec='seconds')}
+    _log(life, 'settled', f['key'], kept=winner_ids, set_aside=done, why=why, owners_words=his)
     return done
 
 

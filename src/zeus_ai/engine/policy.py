@@ -133,10 +133,10 @@ def guard_class(step: dict) -> str:
             continue
         core = _core(part, cls)                            # "If none is recorded, prepare a reply to Jordan" starts with "prepare"
         said = PROPOSED.sub(' ', NEGATED.sub(' ', core))
-        to_him = TO_HIM.match(core) or (TO_HIM_LOOSE.match(core) if cls in TO_OWNER else None)
-        if not to_him and INQUIRE.search(said):
+        to_owner = TO_HIM.match(core) or (TO_HIM_LOOSE.match(core) if cls in TO_OWNER else None)
+        if not to_owner and INQUIRE.search(said):
             return 'message_outside_person'               # "Verify the cutoff with Jordan" starts with a free verb but asks a person
-        lead = PREP.match(core) or to_him
+        lead = PREP.match(core) or to_owner
         if lead:
             m = THEN_ACT.search(said, lead.end())          # only what follows the free verb can turn it into an action
             if not m:
@@ -240,7 +240,7 @@ def decide(opp: dict, grants: Grants | None = None, now: datetime | None = None,
            'steps': steps, 'granted': granted}
     if granted:                         # what the owner approved, so the job can tell "the same kind of thing" from something new
         e = grants.entry(opp.get('dedupe_key', '')) or {}
-        out['granted_by'] = {'approved_example': e.get('title'), 'his_words': e.get('his_words') or e.get('note')}
+        out['granted_by'] = {'approved_example': e.get('title'), 'owners_words': e.get('owners_words') or e.get('note')}
     if night_hold:
         out['held'] = HELD_FOR_MORNING
     return out

@@ -58,7 +58,7 @@ def _live_paths() -> tuple:
 
 LIVE_PROFILE, LIVE_LIFE = _live_paths()
 # Store hosts the stand-alone fail-safe treats as store pages when stores.json cannot be read (same as the shipped table).
-DEFAULT_STORE_HOSTS = ('walmart.com', 'samsclub.com', 'amazon.com', 'ralphs.com', 'kroger.com', 'southwest.com')
+DEFAULT_STORE_HOSTS = ('walmart.com', 'samsclub.com', 'amazon.com', 'southwest.com')
 ANCHOR = '_hermes_actions.execute('
 STATE = {'wrapped': False, 'fence_missing': None, 'anchor_in_source': None, 'loaded_at': None}
 logger = logging.getLogger('purchase-lock')
@@ -156,7 +156,7 @@ def _plk_failsafe(AR, settings, error):
                         r"confirm\s*(?:and|&)\s*(?:pay|book)|book\s*(?:it\s*|this\s*)?(?:now|trip|flights?)|place.?order|buy.?now|"
                         r"^\s*(?:purchase|pay|buy|book)\s*$", re.I)
     CHECKOUT = re.compile(r"/checkout|/purchase|/payment|/gp/buy/|/buy/|/air/booking/(?:purchase|price)", re.I)
-    HOSTS = settings.get('hosts') or ['walmart.com', 'samsclub.com', 'amazon.com', 'ralphs.com', 'kroger.com', 'southwest.com']
+    HOSTS = settings.get('hosts') or ['walmart.com', 'samsclub.com', 'amazon.com', 'southwest.com']
     STORE = re.compile(r"(?:^|\.)(?:" + "|".join(re.escape(str(h)) for h in HOSTS) + r")$", re.I)
     PRESS = re.compile(r"click|submit|dispatchEvent|(?:Mouse|Pointer|Keyboard|Touch|Input)Event|\beval\b|Function\s*\(|setTimeout|"
                        r"setInterval|fromCharCode|\batob\b|fetch\s*\(|XMLHttpRequest|sendBeacon|\[\s*['\"`]", re.I)

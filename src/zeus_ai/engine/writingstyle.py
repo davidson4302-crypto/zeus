@@ -8,7 +8,7 @@ background job is shown it only when it is about to draft a message in their nam
 The part that can go wrong is reading somebody else's words as theirs. An email they sent is mostly quoted text from the
 other person, so everything from the first sign of a quote or a forward is cut, lines that start with ">" are
 dropped, and when in doubt more is cut: losing some of their words costs nothing, keeping one line of theirs is the
-mistake. `his_words()` is a pure function, so it is easy to test against a table of tricky emails.
+mistake. `owners_words()` is a pure function, so it is easy to test against a table of tricky emails.
 
 What may reach the model: their own words only, at most 3,000 characters an email and 20,000 in all, no automated
 mail, no email with anything that looks like a secret. What may come back: one paragraph of at most 500 characters
@@ -131,7 +131,7 @@ def _from_html(raw: str) -> str:
     return html.unescape(t).replace('\xa0', ' ')
 
 
-def his_words(body) -> str:
+def owners_words(body) -> str:
     """What the owner themselves typed in one sent email. Cut at the first quoted or forwarded marker (CUTS), drop every
     line that starts with ">", squeeze blank lines. Anything this cannot tell apart is cut, not kept."""
     t = str(body or '').replace('\r\n', '\n').replace('\r', '\n')
@@ -203,7 +203,7 @@ def prepare(emails: list) -> tuple:
         if has_secret(raw) or has_secret(e.get('subject')):
             skip('looks like it holds a secret')
             continue
-        text = his_words(raw)[:PER_EMAIL]
+        text = owners_words(raw)[:PER_EMAIL]
         if len(text.split()) < MIN_OWN_WORDS:
             skip('almost nothing of their own in it')
             continue

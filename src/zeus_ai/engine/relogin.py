@@ -80,10 +80,10 @@ import settings  # noqa: E402
 SWITCH = 'relogin-on'
 LOG = 'relogin.jsonl'
 LOCK = 'relogin.lock'
-_RELOGIN = settings.get('stores.relogin', ['walmart', 'amazon', 'samsclub', 'southwest', 'ralphs'])
+_RELOGIN = settings.get('stores.relogin', ['walmart', 'amazon', 'samsclub', 'southwest'])
 STORES = tuple(s.strip().lower() for s in (_RELOGIN.split(',') if isinstance(_RELOGIN, str) else _RELOGIN) if str(s).strip())   # the Keychain items zeus-login saves
 SERVICE = 'zeus-login:'
-EXTRA_HOSTS = {'ralphs': ('login.kroger.com',)}                      # a store whose sign-in page lives on its parent company's host
+EXTRA_HOSTS = dict(settings.get('stores.extra_signin_hosts', {}) or {})                      # a store whose sign-in page lives on its parent company's host
 SECURITY = '/usr/bin/security'
 DAY_START, DAY_END = settings.QUIET_END, settings.QUIET_START     # the owner's clock: a store may text a code once the email is typed
 MAX_STEPS = 4                  # pages with a box to type into, in one attempt

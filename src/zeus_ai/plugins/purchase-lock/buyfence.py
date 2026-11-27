@@ -939,7 +939,7 @@ class Fence:
                 base['diffs'] = res['diffs']
                 return self.refuse(base, 'booking_details_differ', grant=mine, booking_page=page, diffs=res['diffs'])
             base['booking_matches'] = True
-        return {**base, 'verdict': 'pass', 'reason': 'his_yes_matches', 'grant_row': mine, 'log': True}
+        return {**base, 'verdict': 'pass', 'reason': 'owners_yes_matches', 'grant_row': mine, 'log': True}
 
     def booking_page(self, facts) -> bool:
         """A booking store's checkout page (where the trip reader decides)."""
@@ -1089,7 +1089,7 @@ class Fence:
                 text = pass_message(self.st, d['store'], int(d['page_total_cents']), g)
                 self.say(text)
                 if isinstance(result, dict):
-                    result['purchase_lock'] = {'reason': 'his_yes_matches', 'store': d['store'], 'grant': g['id'],
+                    result['purchase_lock'] = {'reason': 'owners_yes_matches', 'store': d['store'], 'grant': g['id'],
                                                'page_total_cents': d['page_total_cents'], 'pressed': 1}
                     result['message'] = text
                     try:

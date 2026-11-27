@@ -574,11 +574,11 @@ def escalate(con, life, key, now, own: bool = False) -> str:
 
 # ---- notifier.py: the facts reach the writer, and code checks the ask ----------------------------------------------------
 
-SAY_RULE = ('\n- An item may carry "still_unfinished", "already_tried", "what_i_need_from_him" and "what_i_do_next": something you could not finish. '
+SAY_RULE = ('\n- An item may carry "still_unfinished", "already_tried", "what_i_need_from_owner" and "what_i_do_next": something you could not finish. '
             'Say plainly what is not done and, when there is one, the one thing you need from the owner, in your own words, once. '
             'Do not list the tries; one short clause is enough. Never write as if it were done or under way.')
 MISSING_WHY = 'the note must still carry this one request to the owner, in your own words: {needed}'
-FILE_RULE = ('\n- An item may carry "file_for_him": a file you made for the owner, what kind it is and where it stands. Say exactly where it stands. '
+FILE_RULE = ('\n- An item may carry "file_for_owner": a file you made for the owner, what kind it is and where it stands. Say exactly where it stands. '
              '"Prepared" is not "sent": if it has not been delivered, say it is ready and that getting it to the owner is still open, and why. '
              'Never give the owner a folder or file path on your Mac: their phone cannot open it.')
 PATH_WHY = 'this is a path on your own Mac; their phone cannot open it. Say the file is ready and where it stands instead.'
@@ -592,7 +592,7 @@ def _facts_view(opp: dict, now: datetime) -> dict:
     if not f:
         return {}
     return {k: v for k, v in (('still_unfinished', f.get('unfinished')), ('already_tried', f.get('tried')),
-                              ('what_i_need_from_him', f.get('needed')), ('what_i_do_next', f.get('then'))) if v}
+                              ('what_i_need_from_owner', f.get('needed')), ('what_i_do_next', f.get('then'))) if v}
 
 
 def composing(con, life, now_dt, compose, keep: list, out: dict):
@@ -615,7 +615,7 @@ def composing(con, life, now_dt, compose, keep: list, out: dict):
                 c = o.get('commitment') if isinstance(o.get('commitment'), dict) else {}
                 mine = [d for d in (c.get('deliverables') or o.get('deliverables') or []) if isinstance(d, dict)]
                 if mine:
-                    v = dict(v, file_for_him=[AF.for_writer(d, life) for d in mine][:3])
+                    v = dict(v, file_for_owner=[AF.for_writer(d, life) for d in mine][:3])
                     files = True
             except Exception:
                 pass
@@ -638,7 +638,7 @@ def composing(con, life, now_dt, compose, keep: list, out: dict):
                     kw['rules'] += FILE_RULE
                     if (Path(life) / 'file-delivery-on').exists():   # filedeliver.py: one more sentence, for a file that rides this note as an attachment. Nothing without the switch
                         kw['rules'] += __import__('filedeliver').WRITER_RULE
-            needs = [v['what_i_need_from_him'] for v in by_title.values() if v.get('what_i_need_from_him')]
+            needs = [v['what_i_need_from_owner'] for v in by_title.values() if v.get('what_i_need_from_owner')]
             if (needs or files) and ('must_say' in takes or any_kw):
                 earlier = kw.get('must_say')
                 kw['must_say'] = lambda text: (list(earlier(text)) if earlier else []) + [

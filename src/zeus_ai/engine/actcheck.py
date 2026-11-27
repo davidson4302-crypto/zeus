@@ -155,7 +155,7 @@ def run(con, life_home: Path, *, state_db: Path | None = None, now: float | None
         if finding != 'fine' and not quiet:
             out['flagged'] = out.get('flagged', 0) + 1
             alarm(life_home, r['key'], TITLES[finding].format(t=p.get('title')), kind='life_acted_' + finding,
-                  detail=[f'finding: {finding}', f"the owner's words: {ap.get('his_words') or '(none recorded)'}"] + writes[:4])
+                  detail=[f'finding: {finding}', f"the owner's words: {ap.get('owners_words') or '(none recorded)'}"] + writes[:4])
         if finding == 'unfinished':
             p['unfinished_alarmed'] = now                 # read back again when it is finally closed
         else:

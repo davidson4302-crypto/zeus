@@ -55,9 +55,9 @@ from pathlib import Path
 
 OPEN = ('active', 'paused')
 STATUSES = OPEN + ('done', 'dropped')
-COLS = 'id,title,status,his_words,said_ref,said_at,why,target,done_when,steps,rev,created,updated,closed'
+COLS = 'id,title,status,owners_words,said_ref,said_at,why,target,done_when,steps,rev,created,updated,closed'
 TABLES = (
-    'CREATE TABLE IF NOT EXISTS goals(id TEXT PRIMARY KEY, title TEXT NOT NULL, status TEXT NOT NULL, his_words TEXT NOT NULL, said_ref TEXT NOT NULL, '
+    'CREATE TABLE IF NOT EXISTS goals(id TEXT PRIMARY KEY, title TEXT NOT NULL, status TEXT NOT NULL, owners_words TEXT NOT NULL, said_ref TEXT NOT NULL, '
     'said_at REAL NOT NULL, why TEXT, target TEXT, done_when TEXT, steps TEXT NOT NULL, rev INTEGER NOT NULL, created REAL, updated REAL, closed TEXT)',
     'CREATE TABLE IF NOT EXISTS goal_events(seq INTEGER PRIMARY KEY AUTOINCREMENT, goal TEXT NOT NULL, at REAL NOT NULL, actor TEXT NOT NULL, kind TEXT NOT NULL, text TEXT, ref TEXT)')
 DROPPED_SHOWN_DAYS = 30        # how long a goal the owner dropped stays in front of research as "do not raise"
@@ -114,8 +114,8 @@ def _save(con, g: dict, now: float, owner: bool = True) -> None:
     what "something new" means for this goal. Zeus's own bookkeeping (a step it suggested) never does."""
     if owner:
         g['rev'], g['updated'] = int(g['rev']) + 1, now
-    con.execute('UPDATE goals SET title=?,status=?,his_words=?,said_ref=?,said_at=?,why=?,target=?,done_when=?,steps=?,rev=?,updated=?,closed=? WHERE id=?',
-                (g['title'], g['status'], g['his_words'], g['said_ref'], g['said_at'], g['why'], g['target'], g['done_when'], json.dumps(g['steps'], ensure_ascii=False),
+    con.execute('UPDATE goals SET title=?,status=?,owners_words=?,said_ref=?,said_at=?,why=?,target=?,done_when=?,steps=?,rev=?,updated=?,closed=? WHERE id=?',
+                (g['title'], g['status'], g['owners_words'], g['said_ref'], g['said_at'], g['why'], g['target'], g['done_when'], json.dumps(g['steps'], ensure_ascii=False),
                  g['rev'], g['updated'], json.dumps(g['closed'], ensure_ascii=False) if g['closed'] else None, g['id']))
 
 
@@ -183,7 +183,7 @@ def add(con, title: str, words: str, said_ref: str, said_at: float, *, why: str 
                            'It comes back only when the owner says so in a new message.')
     if old:                                                  # dropped, and the owner has said it again since
         how = 'restated'
-        old.update(status='active', his_words=words, said_ref=said_ref, said_at=float(said_at), closed=None, why=why or old['why'], target=target or old['target'],
+        old.update(status='active', owners_words=words, said_ref=said_ref, said_at=float(said_at), closed=None, why=why or old['why'], target=target or old['target'],
                    done_when=done_when or old['done_when'])
         _save(con, old, now)
         _event(con, old['id'], 'owner', how, words, said_ref, now)
@@ -287,7 +287,7 @@ def _told(con) -> dict:
         if row:
             p = json.loads(row[1])
             if isinstance(p.get('approved'), dict):         # `life approve`: the owner's yes, recorded once against the exact step
-                rec.update(answer='yes', answer_at=float(p['approved'].get('at') or 0), answer_words=str(p['approved'].get('his_words') or ''))
+                rec.update(answer='yes', answer_at=float(p['approved'].get('at') or 0), answer_words=str(p['approved'].get('owners_words') or ''))
             elif row[0] == 'declined' and (p.get('closed') or {}).get('by') == 'zeus chat':      # `life drop` / `life mute` in chat: the owner passed
                 rec.update(answer='no', answer_at=float((p.get('closed') or {}).get('at') or 0), answer_words=str((p.get('closed') or {}).get('why') or ''))
         out[iid] = rec
@@ -367,7 +367,7 @@ def _step_line(s: dict, tz=None) -> str:
     return f"{s['n']}. {s['what']} ({who}). {tail}."
 
 
-EVENT_WORDS = {'stated': 'The owner gave this goal', 'his_words': 'The owner\'s own words about it, from before Zeus asked', 'relayed': 'The owner gave this goal (said to a builder, passed on word for word)', 'restated': 'The owner gave this goal again',
+EVENT_WORDS = {'stated': 'The owner gave this goal', 'owners_words': 'The owner\'s own words about it, from before Zeus asked', 'relayed': 'The owner gave this goal (said to a builder, passed on word for word)', 'restated': 'The owner gave this goal again',
                'kept': 'The owner said yes, keep it as a goal', 'answered_no': 'The owner said no to keeping it as a goal', 'asked': 'Zeus asked once whether to keep this as a goal', 'paused': 'The owner paused it', 'resumed': 'The owner resumed it',
                'dropped': 'The owner dropped it', 'not_a_goal': 'The owner said it is not a goal', 'done': 'The owner marked it done', 'target': 'The owner changed the target date',
                'renamed': 'The owner renamed it', 'why': 'The owner said why it matters', 'done_when': 'The owner said what counts as done',
@@ -380,7 +380,7 @@ def history(con, g: dict, told: dict | None = None, tz=None) -> list:
     rows = []
     for at, actor, kind, text in con.execute('SELECT at,actor,kind,text FROM goal_events WHERE goal=? ORDER BY seq', (g['id'],)).fetchall():
         words = EVENT_WORDS.get(kind, kind)
-        quote = kind in ('stated', 'his_words', 'relayed', 'restated', 'kept', 'answered_no', 'asked', 'paused', 'resumed', 'dropped', 'not_a_goal', 'done', 'why', 'done_when')
+        quote = kind in ('stated', 'owners_words', 'relayed', 'restated', 'kept', 'answered_no', 'asked', 'paused', 'resumed', 'dropped', 'not_a_goal', 'done', 'why', 'done_when')
         rows.append((float(at), (words + (f': "{text}"' if quote and text else f': {text}' if text else '')) if words else str(text)))
     for iid, t in told.items():
         if g['id'] not in t['goals']:
@@ -401,7 +401,7 @@ def page(con, g: dict, tz=None) -> str:
     view = steps_view(con, g, told)
     head = [g['title'], WORDS[g['status']].capitalize() + '.' + (f" Target: {_date_words(g['target'])}." if g['target'] else ' No target date.')]
     said = 'Said to a builder' if g['said_ref'].startswith('said:') else 'The owner said'
-    head.append(f"{said} ({_day(g['said_at'], tz)}): \"{g['his_words']}\"")
+    head.append(f"{said} ({_day(g['said_at'], tz)}): \"{g['owners_words']}\"")
     if g['why']:
         head.append(f"Why it matters to the owner: \"{g['why']}\"")
     if g['done_when']:
@@ -457,7 +457,7 @@ def add_to_bundle(con, ix, tracking_parts: list, now_ts: float, checkpoint_ts: f
         tracking_parts.append(f"- [{lab}] Goal the owner gave you | goal:{g['id']} | {g['title']} | target {g['target'] or 'none'} | next step: {nxt['what'] if nxt else 'none set'} | "
                               f"changed since the last run: {'yes' if is_new else 'no'} | page: goals.md")
         parts += [f"## [{lab}] {g['title']}", '', f"active · Updated: {when(g['updated'])} · Changed since checkpoint: {'true' if is_new else 'false'}", '',
-                  f"- **Goal id:** {g['id']}", f"- **The owner's words ({when(g['said_at'])}):** {g['his_words']}"]
+                  f"- **Goal id:** {g['id']}", f"- **The owner's words ({when(g['said_at'])}):** {g['owners_words']}"]
         parts += ([f"- **Why it matters to the owner:** {g['why']}"] if g['why'] else []) + ([f"- **Done when (the owner's words):** {g['done_when']}"] if g['done_when'] else [])
         parts += [f"- **Target date:** {g['target'] or 'none set'}", f"- **Next step:** {nxt['what'] if nxt else 'none set'}", '- **Steps:**'] + [f'  {_step_line(s)}' for s in view] + (
             [] if view else ['  None yet.']) + ['- **History:**'] + [f'  {h}' for h in history(con, g, told)] + ['']
@@ -625,13 +625,13 @@ def _opt(args: list, flag: str) -> str:
 
 def _saved_words(how: str, g: dict) -> str:
     lead = {'saved': 'Goal saved', 'restated': 'Goal saved again (the owner had dropped it and has now said it again)', 'kept': 'Goal saved on the owner\'s yes', 'exists': 'Already one of the owner\'s goals, nothing changed'}[how]
-    return (f"{lead}: \"{g['title']}\"" + (f", target {_date_words(g['target'])}" if g['target'] else ', no target date') + f".\nHis words ({_day(g['said_at'])}): \"{g['his_words']}\"\n"
+    return (f"{lead}: \"{g['title']}\"" + (f", target {_date_words(g['target'])}" if g['target'] else ', no target date') + f".\nHis words ({_day(g['said_at'])}): \"{g['owners_words']}\"\n"
             + ('' if how == 'exists' else 'Tell the owner once, in one line, that it is saved' + (' with the date as you understood it' if g['target'] else '')
                + ', and that the owner can pause, change or drop it any time. Ask the owner nothing about it now and promise no check-ins: a next step comes only when one is useful, '
                  'and the weekly plan lists it in one line.\n') + f"Its page: life goal show {g['id']}")
 
 
-def cli(a: list, life, db, his_message, out=print) -> int:
+def cli(a: list, life, db, owners_message, out=print) -> int:
     """`life goal ...` (lifecli passes its own ledger opener and its check of the owner's real words)."""
     args = list(a)
     verb = args.pop(0) if args else 'list'
@@ -657,8 +657,8 @@ def cli(a: list, life, db, his_message, out=print) -> int:
             out('Not recorded. Quote what the owner said: add --said "<the owner\'s exact words>". Nothing was changed.')
             return 2
         try:
-            msg = his_message(said)
-            extra = {k: (v if v and his_message(v) is not None else '') for k, v in (('why', why), ('done_when', done_when))}
+            msg = owners_message(said)
+            extra = {k: (v if v and owners_message(v) is not None else '') for k, v in (('why', why), ('done_when', done_when))}
         except Exception as e:
             out(f'Could not check the owner\'s words against the owner\'s real messages ({type(e).__name__}), so nothing was recorded. Nothing changed.')
             return 1
@@ -700,7 +700,7 @@ def cli(a: list, life, db, his_message, out=print) -> int:
         g, near = find(con, args[0] if args else '')
         asked = asks(con).get(slug(args[0])) if g is None and args and verb in ('keep', 'drop', 'not') else None
         if asked:                                            # the owner's answer to the one question: the goal goes on record with the words the owner was asked about
-            how, g = add(con, asked['title'], ' / '.join(q['quote'] for q in asked['quotes']), ref, at, now=now, kind='his_words')
+            how, g = add(con, asked['title'], ' / '.join(q['quote'] for q in asked['quotes']), ref, at, now=now, kind='owners_words')
             if how == 'refused':
                 out(g)
                 return 3

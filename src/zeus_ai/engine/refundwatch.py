@@ -1,7 +1,7 @@
 """refundwatch: promised refunds and return deadlines are followed until the store says the money is on its way.
 
 Why: a refund that never shows up costs the owner real money silently. This follows every refund a store promised
-and every return that has to go back, at the stores in the store table (Walmart, Sam's Club, Amazon, Ralphs). On time = silent.
+and every return that has to go back, at the stores in the store table (Walmart, Sam's Club, Amazon). On time = silent.
 It only READS store mail. It never starts, cancels or changes a return or an order, and it cannot see the owner's card: every
 line says what the STORE said, never that money arrived. Airline refunds (Southwest) are not covered: there is no refund notice
 format for them to build on.
@@ -127,12 +127,12 @@ F_PROBLEM = {
     'charge_coming': (r"(?:we will|we" + _AP + r"ll|will be|going to be|about to be) charg(?:e|ed)\b[^.!?]{0,80}" + _MONEY + r"|" + _MONEY + r"[^.!?]{0,40}\bwill be charged|"
                       r"to avoid (?:a |the |being |any |this )?charg|estimated charge|or (?:you" + _AP + r"ll|you will|we" + _AP + r"ll|we will) (?:be )?charge"),
     'other': (r"(?:problem|issue|trouble) with (?:your |the )?(?:return|refund)|something(?: is|" + _AP + r"s)? wrong with (?:your |the )?(?:return|refund)"),    # only when nothing more exact is said
-    'needs_him': (r"(?:action|response) (?:is )?(?:needed|required)\b[^.!?]{0,50}\b(?:return|refund)|(?:return|refund)\b[^.!?]{0,50}\b(?:action|response) (?:is )?(?:needed|required)"),
+    'needs_owner': (r"(?:action|response) (?:is )?(?:needed|required)\b[^.!?]{0,50}\b(?:return|refund)|(?:return|refund)\b[^.!?]{0,50}\b(?:action|response) (?:is )?(?:needed|required)"),
 }
-PROBLEM_ORDER = ('charged', 'refund_stopped', 'return_refused', 'wrong_item', 'not_received', 'charge_coming', 'needs_him', 'other')
+PROBLEM_ORDER = ('charged', 'refund_stopped', 'return_refused', 'wrong_item', 'not_received', 'charge_coming', 'needs_owner', 'other')
 PROBLEM_WORDS = {'charged': 'it has made a charge on this return', 'refund_stopped': 'the refund was stopped, reversed or declined', 'return_refused': 'the return was not accepted',
                  'wrong_item': 'what it got back is not what it expected', 'not_received': 'it has not received the item back', 'charge_coming': 'a charge is coming unless the item goes back',
-                 'needs_him': 'it needs the owner to do something about the return or refund', 'other': 'something is wrong with the return or refund'}
+                 'needs_owner': 'it needs the owner to do something about the return or refund', 'other': 'something is wrong with the return or refund'}
 # Sentences that are the store's small print, never its statement about this return.
 BOILERPLATE = re.compile(r"authorize us to|based on our verification|may (?:be )?charge|might (?:be )?charge|if the item is not|learn more about|returns? policy|refund policy|"
                          r"can request a refund|for a refund or replacement|start a return|never ask for", re.I)
@@ -468,7 +468,7 @@ def read_mail_facts(store: str, mail: dict, extract=None, budget: dict | None = 
         else:
             flags.add({'return_started': 'started', 'return_received': 'received', 'refund_promised': 'promised'}[k])
     if 'cancelled' in flags and OW.BY_HIM.search(s + '\n' + '\n'.join(first)):
-        flags.add('by_him')
+        flags.add('by_owner')
     if 'cancelled' in flags and any(RX['no_charge'].search(x) for x in sents):
         flags.add('no_charge')
     if RX['keep'].search(s + '\n' + '\n'.join(first)):
@@ -512,7 +512,7 @@ def read_mail_facts(store: str, mail: dict, extract=None, budget: dict | None = 
     return ev
 
 
-PROBLEM_GENERIC = frozenset(('amazon', 'walmart', 'sams', 'club', 'ralphs', 'return', 'returned', 'returns', 'refund', 'refunds', 'refunded', 'charge', 'charged',
+PROBLEM_GENERIC = frozenset(('amazon', 'walmart', 'sams', 'club', 'return', 'returned', 'returns', 'refund', 'refunds', 'refunded', 'charge', 'charged',
                              'charges', 'will', 'have', 'that', 'this', 'than', 'them', 'they', 'were', 'which', 'requested', 'received', 'receive', 'different',
                              'original', 'payment', 'method', 'card', 'below', 'above', 'hello', 'please', 'because', 'sent', 'back', 'send', 'reversed'))
 
@@ -664,7 +664,7 @@ def _split(ev: dict) -> list:
     if not (ev.get('problem') and ev.get('other_orders')):
         return [ev]
     out = [{**ev, 'flags': [f for f in ev.get('flags') or [] if f != 'issued']}]
-    rest = [f for f in ev.get('flags') or [] if f in ('issued', 'received', 'started', 'promised', 'cancelled', 'return_cancelled', 'replacement', 'no_charge', 'by_him', 'keep_returning')]
+    rest = [f for f in ev.get('flags') or [] if f in ('issued', 'received', 'started', 'promised', 'cancelled', 'return_cancelled', 'replacement', 'no_charge', 'by_owner', 'keep_returning')]
     if rest:
         out.append({k: v for k, v in ev.items() if k not in ('problem', 'problem_quote', 'charge', 'problem_words', 'problem_amounts', 'other_orders', 'rma')} |
                    {'orders': ev['other_orders'], 'flags': rest, 'src': ev['src'] + '#others'})
@@ -677,7 +677,7 @@ def apply(data: dict, ev: dict, run_dt: datetime):
     store, at, flags = ev['store'], ev['at'], set(ev.get('flags') or [])
     case, clear = find_case(data, ev)
     opens = bool(flags & {'started', 'received', 'promised'}) or bool(ev.get('problem')) or ('reminder' in flags and ev.get('return_by')) or \
-        ('cancelled' in flags and 'no_charge' not in flags and 'issued' not in flags and not ('by_him' in flags and 'promised' not in flags and not ev.get('refund_by')))
+        ('cancelled' in flags and 'no_charge' not in flags and 'issued' not in flags and not ('by_owner' in flags and 'promised' not in flags and not ev.get('refund_by')))
     if ev.get('unread'):
         if case is not None and not case.get('closed'):
             _note(case, at, 'not understood', ev['src'], ev.get('subject') or '')
@@ -724,7 +724,7 @@ def apply(data: dict, ev: dict, run_dt: datetime):
         case['started'] = at
     if 'cancelled' in flags:
         case['kind'] = 'cancel'
-        case['cancelled'] = {'at': at, 'src': ev['src'], 'by_him': 'by_him' in flags}
+        case['cancelled'] = {'at': at, 'src': ev['src'], 'by_owner': 'by_owner' in flags}
         if 'no_charge' in flags:
             _close(case, _iso(run_dt), 'the store cancelled it and says there is no charge: no refund is owed')
     if ev.get('return_by') and not case.get('went_back'):
@@ -1339,14 +1339,13 @@ def describe(case: dict) -> str:
     return ' '.join(parts)
 
 
-STORE_NAMES = {'walmart': 'walmart', 'wal-mart': 'walmart', 'amazon': 'amazon', 'samsclub': 'samsclub', 'sams': 'samsclub', "sam's": 'samsclub', "sam's club": 'samsclub', 'sams club': 'samsclub',
-               'ralphs': 'ralphs', 'kroger': 'ralphs'}
+STORE_NAMES = {'walmart': 'walmart', 'wal-mart': 'walmart', 'amazon': 'amazon', 'samsclub': 'samsclub', 'sams': 'samsclub', "sam's": 'samsclub', "sam's club": 'samsclub', 'sams club': 'samsclub'}
 USAGE = ('life refund                                              what the stores have said about their returns and refunds (reads only)\n'
-         'life refund back <walmart|samsclub|amazon|ralphs> "<what it is>" --said "<their exact words>" [--order <number>] [--by <day it must be back>] [--dropped]\n'
+         'life refund back <walmart|samsclub|amazon> "<what it is>" --said "<their exact words>" [--order <number>] [--by <day it must be back>] [--dropped]\n'
          '                                                         the owner said something is going back (--dropped: the owner said it already went back). It only writes that down.')
 
 
-def cli(a: list, life, his_message=None, now_dt: datetime | None = None) -> int:
+def cli(a: list, life, owners_message=None, now_dt: datetime | None = None) -> int:
     """`life refund`: read only. `life refund back ...`: write down that the owner said something is going back. It never
     starts, cancels or changes a return; it only records the owner's word so the watch can follow the refund."""
     life = Path(life)
@@ -1401,9 +1400,9 @@ def cli(a: list, life, his_message=None, now_dt: datetime | None = None) -> int:
         print('Not recorded. Quote what the owner said: add --said "<their exact words>". Nothing was changed.')
         return 2
     msg = None
-    if his_message is not None:
+    if owners_message is not None:
         try:
-            msg = his_message(said)
+            msg = owners_message(said)
         except Exception as e:
             print(f'Could not check their words against their real messages ({type(e).__name__}), so nothing was recorded.')
             return 1

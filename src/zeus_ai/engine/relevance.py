@@ -573,7 +573,7 @@ def composing(compose, keep: list):
         return compose
 
     def with_what_changed(items, *a, **k):
-        items = [dict(it) | ({'what_changed_since_you_last_asked_him': facts[i]} if i in facts and i < len(keep) else {}) for i, it in enumerate(items)]
+        items = [dict(it) | ({'what_changed_since_you_last_asked_owner': facts[i]} if i in facts and i < len(keep) else {}) for i, it in enumerate(items)]
         return compose(items, *a, **k)
     return with_what_changed
 

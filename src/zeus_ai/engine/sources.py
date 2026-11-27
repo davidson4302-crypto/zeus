@@ -62,7 +62,7 @@ def same_mailbox(address: str) -> str:
     return f'{local}@{domain}' if local and domain else ''
 
 
-def greets_him(text: str) -> bool:
+def greets_owner(text: str) -> bool:
     """Does the newest message open by speaking to the owner by name? ("Hi Alex,", "Alex -", "Jordan and Alex,",
     "Alex, can you sign this today?" for an owner named Alex). Looks at the first two lines only; a greeting to somebody
     else ends the look."""
@@ -88,7 +88,7 @@ def addressed(mailbox: str, to: str, cc: str, text: str = '') -> str:
     on = lambda line: any(same_mailbox(a) in own for a in _ADDRESS.findall(str(line or '')))
     if not str(to or '').strip() and not str(cc or '').strip():
         return 'to'
-    return 'to' if on(to) or greets_him(text) else 'cc' if on(cc) else 'not_named'
+    return 'to' if on(to) or greets_owner(text) else 'cc' if on(cc) else 'not_named'
 
 
 def _fp(*parts):
@@ -524,11 +524,11 @@ def meetings_listed(since_day: str, until_day: str, timeout: float = 30) -> list
 
 
 def meetings_notes(ids: list, timeout: float = 30) -> dict:
-    """The notes of up to ten meetings -> {id: {'title', 'at', 'people', 'his_notes', 'summary'}}. `his_notes` is what the
+    """The notes of up to ten meetings -> {id: {'title', 'at', 'people', 'owners_notes', 'summary'}}. `owners_notes` is what the
     owner typed themselves; `summary` is the note-taker's condensed write-up (not a transcript, and not the owner's exact
     words). Meeting notes not turned on -> {}."""
     if not GRANOLA_ON:
         return {}
     text = granola_read('GRANOLA_MCP_GET_MEETINGS', {'meeting_ids': list(ids)[:10]}, timeout)      # this read takes the ids only
     return {mid: {'title': _xml_attr(tag, 'title'), 'at': _xml_attr(tag, 'meeting_at'), 'people': ' '.join(_xml_inner(inner, 'known_participants').split()),
-                  'his_notes': _xml_inner(inner, 'private_notes'), 'summary': _xml_inner(inner, 'summary')} for mid, tag, inner in _MEETING.findall(text)}
+                  'owners_notes': _xml_inner(inner, 'private_notes'), 'summary': _xml_inner(inner, 'summary')} for mid, tag, inner in _MEETING.findall(text)}

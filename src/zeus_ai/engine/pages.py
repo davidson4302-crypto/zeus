@@ -829,8 +829,8 @@ def freshness(life_home, message, now=None, question=True) -> dict | None:
             to = by or there.group(1)
             what = f"{OWNER}'s email to {to} at {e['name']}"
         days = _days_ago(top['at'], now)
-        his_words = ' '.join(str(f.get('quote', '')) for f in ((e['person'] or {}).get('facts') or []) + ((e['person'] or {}).get('open_threads') or []))
-        phone = bool(PHONE_WORDS.search(str(message or ''))) or bool(PHONE_WORDS.search(his_words)) or \
+        owners_words = ' '.join(str(f.get('quote', '')) for f in ((e['person'] or {}).get('facts') or []) + ((e['person'] or {}).get('open_threads') or []))
+        phone = bool(PHONE_WORDS.search(str(message or ''))) or bool(PHONE_WORDS.search(owners_words)) or \
             (e['kind'] == 'person' and bool(e['person']) and not any(x.get('source') == 'email' for x in lines))
         stale = days > STALE_DAYS
         return {'name': e['name'], 'kind': e['kind'], 'at': top['at'], 'date': P._day(top['at'], year=True),
@@ -1068,11 +1068,11 @@ def contact(life_home, message, now=None, chat=None, question=True) -> dict | No
             if top:
                 days = _days_ago(top['at'], now)
                 ago = 'today' if days <= 0 else 'yesterday' if days == 1 else f'{days} days ago'
-                his_before = next((m for m in mail if not m['theirs'] and m['at'] < top['at']), None)
+                owners_before = next((m for m in mail if not m['theirs'] and m['at'] < top['at']), None)
                 reply_to = None
-                if top['theirs'] and his_before and (_bare(his_before['subject']) == _bare(top['subject']) or
-                                                     (his_before.get('thread') and his_before.get('thread') == top.get('thread'))):
-                    reply_to = P._day(his_before['at'])
+                if top['theirs'] and owners_before and (_bare(owners_before['subject']) == _bare(top['subject']) or
+                                                     (owners_before.get('thread') and owners_before.get('thread') == top.get('thread'))):
+                    reply_to = P._day(owners_before['at'])
                 last = {'theirs': top['theirs'], 'at': top['at'], 'day': P._day(top['at']), 'days': days, 'ago': ago,
                         'subject': _clean(top['subject'], 120), 'reply_to': reply_to}
             # owed or settled
@@ -1430,7 +1430,7 @@ def plan(mail_by_box: dict, heard: dict, hub: dict, index: dict, existing: dict,
             slug = P._slug(name, taken)
             for s, x in index.items():          # same first name as one of the owner's one-word pages: never joined, only told
                 if ' ' not in P._core(x.get('name')) and P._core(x.get('name')) == P._core(_first(name)):
-                    maybe.append({'seeded': name, 'his_page': x.get('name')})
+                    maybe.append({'seeded': name, 'owners_page': x.get('name')})
         taken.add(slug)
         entry = src_new.setdefault(slug, {'name': (index.get(slug) or {}).get('name') or name, 'aliases': [], 'emails': [],
                                           'evidence': [], 'joined': slug in index})

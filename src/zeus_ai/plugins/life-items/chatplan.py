@@ -286,7 +286,7 @@ def role(it: dict) -> str:
     if s.startswith('you told them') and 'waiting on their word' in s:
         return 'ask'
     if s.startswith('you finished'):
-        return 'ask' if it.get('his_call') else 'news'
+        return 'ask' if it.get('owners_call') else 'news'
     if s.startswith(('you are working', 'you have not started')):
         return 'coming'
     return 'done'
@@ -307,7 +307,7 @@ def due_of(it: dict, now: datetime):
     # their sentence, and a time already past is not a deadline: an ask whose only deadline has passed is due at no
     # time, never "before the owner's next morning text".
     windows = [re.split(r'(?<=[.!?])\s+(?=[A-Z])', m.group(1), maxsplit=1)[0]
-               for field in ('his_call', 'facts', 'you_found', 'what') for m in CUE.finditer(str(it.get(field) or ''))]
+               for field in ('owners_call', 'facts', 'you_found', 'what') for m in CUE.finditer(str(it.get(field) or ''))]
     windows = [w for w in windows if deadline(w, now) is not None]
     cued = [d for d in (deadline(w, now, not_before=now) for w in windows) if d is not None]
     if cued:
@@ -317,7 +317,7 @@ def due_of(it: dict, now: datetime):
 
 def _deadline_sentence(it: dict) -> str:
     """The one sentence of its ask or facts that says by when ("She needs an answer by 6pm today."), or ''."""
-    for field in ('his_call', 'facts'):
+    for field in ('owners_call', 'facts'):
         for s in re.split(r'(?<=[.!?])\s+', str(it.get(field) or '')):
             if CUE.search(s) and deadline(s, datetime(2000, 1, 3)) is not None:
                 return _clip(s, 110)
@@ -345,7 +345,7 @@ def say_line(it: dict, short: bool = False) -> str:
     if short:
         bits = [_clip(it.get('you_found') or it.get('what') or 'one thing', 150)]
         if r == 'ask':
-            bits += [x for x in ('Their call: ' + _clip(it.get('his_call'), 90) if it.get('his_call') else '', _deadline_sentence(it)) if x]
+            bits += [x for x in ('Their call: ' + _clip(it.get('owners_call'), 90) if it.get('owners_call') else '', _deadline_sentence(it)) if x]
         elif r == 'snag' and it.get('facts'):
             bits.append(_clip(it['facts'], 110))
         elif r == 'news' and _news_facts(it):
@@ -356,8 +356,8 @@ def say_line(it: dict, short: bool = False) -> str:
     bits = [_clip(it.get('what') or 'one thing', 120)]
     if it.get('you_found'):
         bits.append(_clip(it['you_found'], 160))
-    if r == 'ask' and it.get('his_call'):
-        bits.append('Their call: ' + _clip(it['his_call'], 160))
+    if r == 'ask' and it.get('owners_call'):
+        bits.append('Their call: ' + _clip(it['owners_call'], 160))
     if it.get('facts'):
         bits.append(_clip(it['facts'], 200))
     if r == 'coming' and it.get('he_hears_about_it'):
@@ -390,7 +390,7 @@ NOT_A_NAME = frozenset('reply send answer plan confirm verify sort check prepare
 def names_of(it: dict) -> set:
     """The capitalised words that name this thing (people, shops, places), lower case."""
     out = set()
-    for field in ('what', 'his_call', 'you_found', 'you_noticed', 'facts'):
+    for field in ('what', 'owners_call', 'you_found', 'you_noticed', 'facts'):
         out |= {w.lower() for w in re.findall(r"\b[A-Z][a-z]{2,}\b", str(it.get(field) or ''))}
     return out - NOT_A_NAME
 
@@ -585,8 +585,8 @@ def cut_unplanned(reply: str, p: dict, items: list, message: str = '', now=None,
             for s in SENT.split(line[len(lead):].strip()):
                 about = [k for k, (ns, tw) in others.items() if s and _talks_about(s, ns, tw)]
                 if about and not any(_talks_about(s, names_of(it), title_words(it)) for it in planned) and not re.search(r'["“”]', s):
-                    needs_him = any(role(by_key[k]) in ('ask', 'snag', 'coming') for k in about)
-                    if first or (needs_him and (soon(s) if soon is not None else _due_soon(s, now))):
+                    needs_owner = any(role(by_key[k]) in ('ask', 'snag', 'coming') for k in about)
+                    if first or (needs_owner and (soon(s) if soon is not None else _due_soon(s, now))):
                         return None
                     cut += 1
                     continue
@@ -891,7 +891,7 @@ def trim_readback(reply: str, it: dict | None):
     if not it:
         return None
     name = _stems(' '.join(title_words(it) | names_of(it)) + ' ' + str(it.get('what') or ''))
-    detail = _stems(' '.join(str(it.get(f) or '') for f in ('you_found', 'facts', 'his_call', 'prepared'))) - name - _stems(' '.join(DETAIL_SKIP))
+    detail = _stems(' '.join(str(it.get(f) or '') for f in ('you_found', 'facts', 'owners_call', 'prepared'))) - name - _stems(' '.join(DETAIL_SKIP))
     if not detail:
         return None
     out = _remap(reply, lambda s: _without_readback(s, detail))         # the next step stays
@@ -919,7 +919,7 @@ def _other_ask_in(sentence: str, others: list, msg_words: set) -> bool:
     said = set(re.findall(r"[a-z]{4,}", norm(sentence)))
     nums = _numbers(sentence)
     for it in others:
-        text = ' '.join(str(it.get(f) or '') for f in ('what', 'you_found', 'facts', 'his_call'))
+        text = ' '.join(str(it.get(f) or '') for f in ('what', 'you_found', 'facts', 'owners_call'))
         words = (title_words(it) | names_of(it)) - msg_words
         drafted = set(re.findall(r"[a-z]{4,}", norm(str(it.get('prepared') or '').split(':', 1)[-1])))
         if words & said or (nums and nums & _numbers(text + ' ' + str(it.get('prepared') or ''))) \

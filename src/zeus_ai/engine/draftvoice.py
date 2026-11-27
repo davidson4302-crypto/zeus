@@ -357,7 +357,7 @@ class Given:
         self.flat = not isinstance(given, dict)
         if isinstance(given, dict):
             self.now = _ts(given.get('now')) or None
-            for key, part in (('instruction', 'instruction'), ('his_words', 'instruction'), ('item', 'instruction'), ('thread', 'thread'),
+            for key, part in (('instruction', 'instruction'), ('owners_words', 'instruction'), ('item', 'instruction'), ('thread', 'thread'),
                               ('facts', 'facts'), ('sources', 'facts')):
                 self._spread(given.get(key), part)
         else:
@@ -390,7 +390,7 @@ class Given:
         elif isinstance(value, dict):
             text = value.get('text') or value.get('body') or value.get('preview')
             if text is not None and part == 'thread':
-                mine = value.get('mine') or value.get('from_him') or value.get('from_owner')
+                mine = value.get('mine') or value.get('from_owner') or value.get('from_owner')
                 self.parts['mine' if mine else part].append(_plain(text))
             else:
                 self.parts[part].append(_plain(json.dumps(value, ensure_ascii=False, default=str)))

@@ -279,8 +279,8 @@ def _names_for(zone_key: str) -> set:
     return {k for k, v in PLACES.items() if v == zone_key} | {OT.label(ZoneInfo(zone_key)).lower()}
 
 
-def _named_in(his_words: str, place: str, zone_key: str) -> bool:
-    text = ' ' + _flat(his_words) + ' '
+def _named_in(owners_words: str, place: str, zone_key: str) -> bool:
+    text = ' ' + _flat(owners_words) + ' '
     bits = {w for w in _flat(place).split() if len(w) > 3 and w not in ('city', 'state', 'time', 'zone', 'county', 'united')}   # "maine" names "Portland, Maine"
     return any((' ' + n + ' ') in text for n in _names_for(zone_key) | {_flat(place)} | bits if len(n) > 2)
 
@@ -317,7 +317,7 @@ def where(life) -> str:
     text = 'The owner is treated as being on %s time (%s)' % (OT.label(z), r['place'] or OT.label(z))
     if r['until']:
         text += ' through %s, then back on %s' % (E.plain_day(r['until'], today), _home())
-    return text + '.' + (' They said: "%s"' % r['his_words'] if r.get('his_words') else '')
+    return text + '.' + (' They said: "%s"' % r['owners_words'] if r.get('owners_words') else '')
 
 
 def _settle_now(life: Path):
@@ -332,7 +332,7 @@ def _settle_now(life: Path):
         pass
 
 
-def main(a: list, life, his_message=None) -> int:
+def main(a: list, life, owners_message=None) -> int:
     life = Path(life)
     a = list(a)
     said = ''
@@ -403,7 +403,7 @@ def main(a: list, life, his_message=None) -> int:
               + ' --said "<the owner\'s exact words>". This moves the hours the owner can be texted, so it is only set from their own words. Nothing was changed.')
         return 2
     try:
-        msg = (his_message or _his_message)(said)
+        msg = (owners_message or _his_message)(said)
     except Exception as e:
         print(f'Could not check the owner\'s words against their real messages ({type(e).__name__}), so nothing was changed.')
         return 1
@@ -413,13 +413,13 @@ def main(a: list, life, his_message=None) -> int:
     if not _named_in(said, place, zone_key):
         print(f'The owner\'s words do not name {place} or {OT.label(z)} time, so nothing was changed. Quote the message where they say where they are, or ask them.')
         return 3
-    OT.set_zone(life, zone_key, place=place, until=until, his_words=said[:300], message_id=msg.get('id'))
+    OT.set_zone(life, zone_key, place=place, until=until, owners_words=said[:300], message_id=msg.get('id'))
     _settle_now(life)
     text = (f'Done. The owner is now treated as being on {OT.label(z)} time ({place}) through {E.plain_day(until, today)}, then back on {_home()}. '
             f'Quiet hours follow the clock where they are: nothing before {_hour(settings.QUIET_END)} there, nothing routine after {_hour(settings.QUIET_START)} there.')
     if picked:
         text += ' They gave no last day, so I picked a week. If they are away longer, set it again.'
-    if OT.LINE_CLOCK and not OT.line_follows():   # with zone-on the engine's line counts its morning where the owner is (ownertime.his_clock_line)
+    if OT.LINE_CLOCK and not OT.line_follows():   # with zone-on the engine's line counts its morning where the owner is (ownertime.owners_clock_line)
         nine = datetime.fromtimestamp(OT._clock(), ZoneInfo(OT.LINE_CLOCK)).replace(hour=OT.LINE_DAY_START, minute=0, second=0, microsecond=0)
         there = nine.astimezone(z)
         if there.hour > OT.LINE_DAY_START:

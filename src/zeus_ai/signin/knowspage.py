@@ -369,7 +369,7 @@ def gather(life, now=None) -> dict:
         for fam, g in sorted(grants.items()):
             if not isinstance(g, dict):
                 continue
-            title, words = _one(g.get('title') or ''), _one(g.get('his_words') or g.get('note') or '', QUOTE_MAX)
+            title, words = _one(g.get('title') or ''), _one(g.get('owners_words') or g.get('note') or '', QUOTE_MAX)
             if not _ok(title) or (words and not _ok(words)):
                 continue
             out['oks'].append({'id': 'g:' + fam, 'text': title, 'quote': words, 'ts': _ts(g.get('said_at') or g.get('at')),

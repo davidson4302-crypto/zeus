@@ -5,7 +5,7 @@ PACIFIC from here. The name is kept so their many `astimezone(PACIFIC)` lines re
 the owner is", which is the home zone (settings.OWNER_TZ) unless the owner said otherwise.
 
 Where the answer comes from: one small file in the life folder, owner-zone.json
-    {"zone": "America/Chicago", "place": "Chicago", "until": "YYYY-MM-DD", "set_at": "...", "his_words": "..."}
+    {"zone": "America/Chicago", "place": "Chicago", "until": "YYYY-MM-DD", "set_at": "...", "owners_words": "..."}
 `until` is the last day there; the day after, the answer is the home zone again without anybody doing anything.
 `from` (optional, written by travel.py) is the first day there. Before it the answer is still the home zone: a yes to
 a trip ask can come the day before leaving, and quiet hours must not move while the owner is still at home. No
@@ -28,7 +28,7 @@ What is in here
   clock()            a time written out for a prompt, naming the clock it is really on
   line_asleep()      the agent's texting line is on another clock than the owner's and its morning has not come
   line_follows()     the engine's texting line counts the morning on the owner's clock (switch file zone-on)
-  his_clock_line()   wraps a texting line class so its quiet-hours check runs on the owner's clock
+  owners_clock_line()   wraps a texting line class so its quiet-hours check runs on the owner's clock
   settle()           after the zone changes, the times already stored on open items are rewritten in the new zone
   local_times()      every time stamp in a record, already converted to where the owner is, with its weekday
 
@@ -55,7 +55,7 @@ HOME = settings.OWNER_TZ    # the owner's home zone key
 FILE = 'owner-zone.json'
 LIVE_LIFE = str(settings.LIFE_HOME)   # the same default tick.py and lifecli.py use
 # The agent's texting line (notifier.HermesLine) refuses every send before the morning on ITS clock, the home zone.
-# Wrapped by his_clock_line (notifier._line does this), the line counts that morning, and the whole quiet window,
+# Wrapped by owners_clock_line (notifier._line does this), the line counts that morning, and the whole quiet window,
 # where the owner is. lifezone.py also asks line_follows(): with the switch file zone-on and a trusted zone file the
 # engine treats the line as following the owner's clock; otherwise it does not start a note while the home-clock
 # line is asleep (line_asleep), so a note is never written only to be refused again and again.
@@ -116,7 +116,7 @@ def rule(life=None):
             if until:      # the first moment of the day after, on the clock of the place being left
                 ends = (datetime(until.year, until.month, until.day, tzinfo=z) + timedelta(days=1)).timestamp()
             found = {'zone': z, 'place': str(d.get('place') or ''), 'until': until, 'ends': ends, 'from': first, 'starts': starts,
-                     'set_at': d.get('set_at'), 'his_words': d.get('his_words')}
+                     'set_at': d.get('set_at'), 'owners_words': d.get('owners_words')}
         except Exception:
             found = None
         _cache = {'key': key, 'rule': found}
@@ -311,7 +311,7 @@ def line_follows() -> bool:
         return False
 
 
-def his_clock_line(base):
+def owners_clock_line(base):
     """A subclass of the texting line class `base` whose quiet-hours check runs on the owner's clock (alert_open),
     for the whole quiet window, and is made twice: once when send() starts and again right before the transport
     starts (a journal write or attachment preparation can cross into quiet hours after the first check).
@@ -470,7 +470,7 @@ def with_local_times(observation: dict, nearby=None, life=None) -> dict:
 
 # ---- setting it ---------------------------------------------------------------------------------------------------------
 
-def set_zone(life, zone_name: str, place: str = '', until=None, his_words: str = '', message_id=None, starts=None, asked=None) -> dict:
+def set_zone(life, zone_name: str, place: str = '', until=None, owners_words: str = '', message_id=None, starts=None, asked=None) -> dict:
     """Write owner-zone.json, whole or not at all. `zone_name` must be a zone this machine knows (ZoneInfo raises if
     not). starts: the first day (a date) when that is later than today; asked: for a yes to a trip ask (travel.py),
     the ask that was answered. Both left out: the file holds only the zone, place, last day and the owner's words."""
@@ -478,7 +478,7 @@ def set_zone(life, zone_name: str, place: str = '', until=None, his_words: str =
     z = ZoneInfo(zone_name)
     life = Path(life)
     rec = {'zone': z.key, 'place': place or label(z), 'until': until.isoformat() if until else None,
-           'set_at': datetime.fromtimestamp(_clock(), z).isoformat(timespec='seconds'), 'his_words': his_words or None, 'message_id': message_id}
+           'set_at': datetime.fromtimestamp(_clock(), z).isoformat(timespec='seconds'), 'owners_words': owners_words or None, 'message_id': message_id}
     if starts:
         rec['from'] = starts.isoformat()
     if asked:

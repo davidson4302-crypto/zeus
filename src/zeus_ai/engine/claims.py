@@ -8,8 +8,8 @@ Every kept thing (a "claim") is read through this file with five more facts abou
   speaker       owner | zeus | the named agent or person | unknown
   source_ref    where it came from: chat:<message id>, mail:<mailbox>:<id>, crm:<object>:<id>, item:<key>, or ''
   observed_at   when it was said or read
-  verified      his_words   their own words, quoted, with the message they are in
-                his_channel a real message of theirs, but the kept text is not their exact words
+  verified      owners_words   their own words, quoted, with the message they are in
+                owners_channel a real message of theirs, but the kept text is not their exact words
                 document    read in a source document (an email, a CRM record)
                 relayed     somebody else says so (another agent, a person, Zeus itself repeating a claim)
                 unknown     nothing on record says
@@ -59,7 +59,7 @@ import settings
 SWITCH = 'claims-on'
 OWN_FILE = 'claims.jsonl'
 FIELDS = ('speaker', 'source_ref', 'observed_at', 'verified', 'supersedes')
-VERIFIED = ('his_words', 'his_channel', 'document', 'relayed', 'unknown')
+VERIFIED = ('owners_words', 'owners_channel', 'document', 'relayed', 'unknown')
 RANK = {v: i for i, v in enumerate(VERIFIED)}          # lower = better sourced
 LIVE_HOME = Path(settings.get('paths.life_home', str(settings.PROFILE_DIR / 'workspace' / 'life-engine')))   # the real life folder (never the LIFE_HOME env of a sandbox)
 TEAM_FILE = None                # the team comes from settings.TEAM; a sandbox may name a JSON file with LIFE_TEAM_FILE
@@ -239,7 +239,7 @@ def chat_store(life):
     return None
 
 
-def his_messages(store, since: float = 0.0, until: float | None = None):
+def owners_messages(store, since: float = 0.0, until: float | None = None):
     """Their real messages, oldest first, or None when the store could not be read (never an empty list for that)."""
     if not store:
         return None
@@ -278,10 +278,10 @@ def defaults(store: str, rec: dict, owner: str = '') -> dict:
         elif ref.get('object') and ref.get('id'):
             out.update(speaker='crm', source_ref=f"crm:{ref['object']}:{ref['id']}", verified='document')
         return out
-    quote = str(rec.get('quote') or rec.get('his_words') or '').strip()
+    quote = str(rec.get('quote') or rec.get('owners_words') or '').strip()
     mid = rec.get('message_id')
     if quote and mid is not None and str(mid) != '':
-        out.update(speaker='owner', source_ref=f'chat:{mid}', verified='his_words')        # the writer kept it only with their words found in that message
+        out.update(speaker='owner', source_ref=f'chat:{mid}', verified='owners_words')        # the writer kept it only with their words found in that message
     elif store == 'rule' and re.match(r"Learned from (?:his|her|their|the owner's) mail", str(rec.get('text') or '')):
         out.update(speaker='zeus')                                                         # a habit Zeus worked out by itself: nobody said it
     return out
@@ -296,7 +296,7 @@ def fields(store: str, rec: dict, owner: str = '') -> dict:
             base[k] = rec[k]
     ref = str(base['source_ref'] or '')
     # 'said:' is a statement the owner made outside Zeus's chat that was passed on word for word (said:<where>:<when>).
-    if base['verified'] not in VERIFIED or (base['verified'] in ('his_words', 'his_channel') and not ref.startswith(('chat:', 'said:'))) \
+    if base['verified'] not in VERIFIED or (base['verified'] in ('owners_words', 'owners_channel') and not ref.startswith(('chat:', 'said:'))) \
             or (base['verified'] == 'document' and not ref.startswith(('mail:', 'crm:', 'doc:'))):
         base['verified'] = 'unknown'                # a label with nothing behind it is not believed
         if base['speaker'] == 'owner':
@@ -318,12 +318,12 @@ def stamp(life, store: str, rec, owner: str = ''):
         if store in ('note', 'mute') and f['verified'] == 'unknown':
             f['speaker'] = 'zeus'
             said = re.sub(r'^About "[^"]{0,200}":\s*', '', str(rec.get('text') or rec.get('note') or ''))
-            msgs = his_messages(chat_store(life), time.time() - QUOTE_WINDOW) if len(_flat(said)) >= 8 else None
+            msgs = owners_messages(chat_store(life), time.time() - QUOTE_WINDOW) if len(_flat(said)) >= 8 else None
             tries = [said] + re.findall(r'"([^"]{8,600})"', said)
             found = next(((q, h) for q, h in ((q, find_quote(q, msgs)) for q in tries) if h), None)
             if found:
                 hit = found[1]
-                f.update(speaker='owner', source_ref=f"chat:{hit['id']}", observed_at=_iso(hit['at']), verified='his_words')
+                f.update(speaker='owner', source_ref=f"chat:{hit['id']}", observed_at=_iso(hit['at']), verified='owners_words')
                 rec.setdefault('quote', found[0][:600])
                 rec.setdefault('message_id', hit['id'])
             elif rec.get('key'):
@@ -391,7 +391,7 @@ def learned(life, rows, people=None):
 
 def _claim(cid, store, text, rec, owner='', quote=None, where='') -> dict:
     f = fields(store, rec, owner)
-    return {'id': str(cid), 'store': store, 'raw': str(text or ''), 'message_id': rec.get('message_id'), 'text': ' '.join(str(text or '').split()), 'quote': ' '.join(str(quote if quote is not None else (rec.get('quote') or rec.get('his_words') or '')).split()),
+    return {'id': str(cid), 'store': store, 'raw': str(text or ''), 'message_id': rec.get('message_id'), 'text': ' '.join(str(text or '').split()), 'quote': ' '.join(str(quote if quote is not None else (rec.get('quote') or rec.get('owners_words') or '')).split()),
             'speaker': str(f['speaker']), 'source_ref': str(f['source_ref'] or ''), 'observed_at': f['observed_at'], 'at': _ts(f['observed_at']),
             'verified': f['verified'], 'supersedes': list(f['supersedes'] or []), 'superseded_by': None, 'let_go': None, 'pages': [], 'where': where,
             'asserts': asserts(text)}
@@ -473,7 +473,7 @@ def load(life, now=None) -> list:
                     out.append(c)
     for fam, g in _read_json(life / 'grants.json', {}).items():
         if isinstance(g, dict):
-            said = str(g.get('his_words') or g.get('note') or '')
+            said = str(g.get('owners_words') or g.get('note') or '')
             out.append(_claim(f'grant:{fam}', 'grant', f"Standing OK to handle this kind of thing without asking: {g.get('title') or fam}", g, quote=said if g.get('message_id') is not None else ''))
     for row in _read_lines(life / OWN_FILE):
         if row.get('entry') == 'claim' and row.get('text'):
@@ -528,15 +528,15 @@ def _build(life, text: str, speaker: str, source_ref: str, quote: str, message_i
     kept = {'speaker': who, 'source_ref': str(source_ref or '')[:200], 'observed_at': _iso(observed_at) or _iso(now), 'verified': 'relayed' if who != 'unknown' else 'unknown'}
     if who in HIM:
         if msgs is None:
-            msgs = his_messages(chat_store(life), 0.0)
+            msgs = owners_messages(chat_store(life), 0.0)
         hit = find_quote(row['quote'] or row['text'], msgs, message_id)
         real = hit or next((m for m in msgs or [] if message_id is not None and str(m['id']) == str(message_id)), None)
         if hit:
-            kept.update(speaker='owner', source_ref=f"chat:{hit['id']}", observed_at=_iso(hit['at']), verified='his_words')
+            kept.update(speaker='owner', source_ref=f"chat:{hit['id']}", observed_at=_iso(hit['at']), verified='owners_words')
             row['quote'] = row['quote'] or row['text']
             row['message_id'] = hit['id']
         elif real:
-            kept.update(speaker='owner', source_ref=f"chat:{real['id']}", observed_at=_iso(real['at']), verified='his_channel')
+            kept.update(speaker='owner', source_ref=f"chat:{real['id']}", observed_at=_iso(real['at']), verified='owners_channel')
             row['message_id'] = real['id']
         else:
             kept.update(speaker='unknown', verified='relayed')      # said to be theirs, and nothing of theirs says it: somebody is repeating them
@@ -553,7 +553,7 @@ def record(life, text: str, *, speaker: str, source_ref: str = '', quote: str = 
     """Keep one claim in claims.jsonl. -> the claim as kept.
     `verified` is decided here, never by the caller. A claim handed over as the owner's is theirs only when `quote` (or the
     text) is really in a message of theirs (`msgs`: their messages; when not given they are read from their store): then
-    his_words. A real message of theirs that does not hold those exact words: his_channel. No such message: it is kept as
+    owners_words. A real message of theirs that does not hold those exact words: owners_channel. No such message: it is kept as
     relayed under "unknown", because somebody is repeating them. Anybody else's claim is relayed under their own name,
     whatever it says about them. A claim with no speaker is unknown. A kept claim never approves anything."""
     life = Path(life)
@@ -642,7 +642,7 @@ def _elsewhere(life: Path, old: dict, by=None) -> dict:
     wm = _read_json(wm_path, {})
     if isinstance(wm.get('order'), list) and old.get('message_id') is not None:
         for x in (x for x in wm['order'] if isinstance(x, dict)):
-            keep = [w for w in x.get('why') or [] if not (isinstance(w, dict) and w.get('kind') == 'his_words' and str(w.get('message_id')) == str(old['message_id']))]
+            keep = [w for w in x.get('why') or [] if not (isinstance(w, dict) and w.get('kind') == 'owners_words' and str(w.get('message_id')) == str(old['message_id']))]
             if len(keep) != len(x.get('why') or []):
                 x['why'], out['matters'] = keep, out['matters'] + 1
         if out['matters']:
@@ -960,10 +960,10 @@ def said(c: dict, now=None) -> str:
     on_day = f' on {when}' if when else ''
     text, quote = safe(c['text']), safe(c['quote'])
     who = c['speaker']
-    if c['verified'] == 'his_words':
+    if c['verified'] == 'owners_words':
         told = 'You said it outside our chat, and it was passed to me word for word' if c['source_ref'].startswith('said:') else 'You told me'
         return f'{told}{on_day}: "{quote or text}"' + (f' (what I kept from it: {text})' if quote and _flat(quote) != _flat(text) else '')
-    if c['verified'] == 'his_channel':
+    if c['verified'] == 'owners_channel':
         return f'You told me{on_day}. I have the message, not your exact words for it. What I kept: {text}'
     if c['verified'] == 'document':
         where = _you(c.get('where') or '') or ('a CRM record' if c['source_ref'].startswith('crm:') else 'a document I read')
@@ -1060,7 +1060,7 @@ def audit_memory(profile_dir, *, life=None, chat_db=None, team_file=None, redact
         report['counts'] = {'lines_read': 0, 'asserting': 0, 'verified': 0, 'unverified': 0}
         return report
     store = chat_db or (profile / 'state.db')
-    msgs = his_messages(str(store), 0.0) if Path(store).exists() else None
+    msgs = owners_messages(str(store), 0.0) if Path(store).exists() else None
     if msgs is None:
         report['could_not_read'].append('their messages')
     prefs = {}
@@ -1074,9 +1074,9 @@ def audit_memory(profile_dir, *, life=None, chat_db=None, team_file=None, redact
             prefs = {}
     rules = [{'what': 'a saved rule of theirs', 'text': str(r.get('text') or ''), 'quote': str(r.get('quote') or ''), 'at': _ts(r.get('at')), 'ref': f"chat:{r.get('message_id')}"}
              for r in prefs.get('rules') or [] if isinstance(r, dict) and r.get('quote') and r.get('message_id') is not None]
-    rules += [{'what': 'a standing OK of theirs', 'text': str(g.get('title') or fam), 'quote': str(g.get('his_words') or ''), 'at': _ts(g.get('said_at') or g.get('at')),
+    rules += [{'what': 'a standing OK of theirs', 'text': str(g.get('title') or fam), 'quote': str(g.get('owners_words') or ''), 'at': _ts(g.get('said_at') or g.get('at')),
                'ref': f"chat:{g.get('message_id')}"} for fam, g in _read_json(life / 'grants.json', {}).items()
-              if isinstance(g, dict) and g.get('his_words') and g.get('message_id') is not None]
+              if isinstance(g, dict) and g.get('owners_words') and g.get('message_id') is not None]
     team = _team(team_file)
     if team is None:
         report['could_not_read'].append('the team list')
@@ -1142,7 +1142,7 @@ def audit_memory(profile_dir, *, life=None, chat_db=None, team_file=None, redact
     report['counts'] = {'lines_read': len(lines), 'asserting': len(report['lines']), 'verified': sum(1 for e in report['lines'] if e['verified'] is True),
                         'partly': sum(1 for e in report['lines'] if e['verified'] == 'partly'), 'unverified': sum(1 for e in report['lines'] if e['verified'] is False),
                         'by_kind': {k: sum(1 for e in report['lines'] if e['kind'] == k) for k in ('approval', 'permission', 'reporting')},
-                        'his_messages_searched': len(msgs) if msgs is not None else 'could not be read', 'his_rules_searched': len(rules),
+                        'owners_messages_searched': len(msgs) if msgs is not None else 'could not be read', 'owners_rules_searched': len(rules),
                         'team_members': len(team) if team is not None else 'could not be read'}
     return report
 

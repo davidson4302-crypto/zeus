@@ -2705,7 +2705,7 @@ def _reason(e) -> str:
     return (text[:1].lower() + text[1:]) if text[:1].isupper() and not text[1:2].isupper() else text
 
 
-def correct_cmd(a: list, life, db, find, his_message) -> int:
+def correct_cmd(a: list, life, db, find, owners_message) -> int:
     """life correct <item> ["<the corrected thing in plain words>"] [--due <ISO | +2h | +3d>] [--was <the time it replaces>] [--deadline <ISO>]
                  [--title "<new title>"] [--fact <name>=<value>]... [--unsure "<what is not certain>"] --said "<the owner's exact words>"
     The owner corrected something about an item. This is commit.correct for the chat Zeus:
@@ -2795,7 +2795,7 @@ def correct_cmd(a: list, life, db, find, his_message) -> int:
                 return no(f'no single item matches "{_text(words[0], 80)}"')
             have = get(con, key)
             try:
-                found = his_message(said)
+                found = owners_message(said)
             except Exception:
                 found = None
             actor = 'owner' if found is not None else 'chat'

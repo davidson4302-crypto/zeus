@@ -61,7 +61,7 @@ def _plain_no(life, words, since):
     try:
         import hisreply
         import onesend
-        msg, later = onesend.his_reply(str(words or ''), float(since or 0), time.time(), life)
+        msg, later = onesend.owners_reply(str(words or ''), float(since or 0), time.time(), life)
         return msg if msg is not None and not later and hisreply.read(msg['text'])['answer'] == 'no' else None
     except Exception:
         return None
@@ -73,7 +73,7 @@ def yes_held(con, life, r, p: dict, rec: dict | None = None, said: dict | None =
 
     Code decides this from stored facts and a fresh read of the source (fresh.before_yes), never from what a model
     says. rec: the one-send record of the step, when there is one. said: their real message ({'said_at', 'message_id',
-    'his_words'}), when it has been read. answer: how that message was read, 'yes' or 'no'. words: what the chat Zeus
+    'owners_words'}), when it has been read. answer: how that message was read, 'yes' or 'no'. words: what the chat Zeus
     quoted, where their message has not been read yet (the "not waiting on them" exit).
 
     A yes is held back whenever the thing is not exactly what they answered. A no is held back only when it was a no to
@@ -93,13 +93,13 @@ def yes_held(con, life, r, p: dict, rec: dict | None = None, said: dict | None =
     v = FR.before_yes(con, life, key, said_at=(said or {}).get('said_at'))
     if v.get('go'):
         return None
-    status, tell = v.get('status'), str(v.get('tell_him') or '').strip()
+    status, tell = v.get('status'), str(v.get('tell_owner') or '').strip()
     if answer == 'no' and status not in ('replaced', 'redoing'):
         return None                                   # ended, handled, or unreadable: their no closes it, exactly as before
     A = None
     if rec is not None:
         import actions as A
-        A.note(con, rec['id'], f'their {answer} was held back', why=status, message_id=(said or {}).get('message_id'), his_words=(said or {}).get('his_words'))
+        A.note(con, rec['id'], f'their {answer} was held back', why=status, message_id=(said or {}).get('message_id'), owners_words=(said or {}).get('owners_words'))
     waits = rec is not None and rec['state'] in ('prepared', 'asked')
     if status == 'redoing':
         if waits:
@@ -135,7 +135,7 @@ def yes_held(con, life, r, p: dict, rec: dict | None = None, said: dict | None =
         row = con.execute('SELECT key,state,payload FROM opps WHERE key=?', (key,)).fetchone() if no else None
         if row is not None and row['state'] in ('pending', 'executing', 'ready', 'surfaced'):
             # That ask is over and they say no: nothing is left to tell them about it. It closes like any other no.
-            mark = {'his_words': no['text'][:600], 'message_id': no['id'], 'said_at': no['at']}
+            mark = {'owners_words': no['text'][:600], 'message_id': no['id'], 'said_at': no['at']}
             if waits:
                 A.move(con, rec['id'], 'declined', 'they said no, after that ask had ended', **mark)
             import lifecli

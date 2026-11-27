@@ -98,7 +98,7 @@ JOB_NAMES = (
 ONE_TIME = re.compile(r'^life-(?:work|exec):\s*(?:follow-?up:\s*)?(.+)$', re.I)
 MACHINE = re.compile(r'\b(?:tick|pipes?|cron|shadow|script|agent|hermes|sync|heartbeat|bridge|gateway|webhook|api|daemon|plugin|engine|worker|'
                      r'test|sandbox|ledger|payload|json|outbox|queue|zeus-\w+)\b|[_/{}\[\]`]|\w\.(?:jsonl?|py|md|sqlite3|ya?ml|db|sh)\b', re.I)
-STORE_WORDS = {'walmart': 'Walmart', 'amazon': 'Amazon', 'samsclub': "Sam's Club", 'southwest': 'Southwest', 'ralphs': 'Ralphs'}
+STORE_WORDS = {'walmart': 'Walmart', 'amazon': 'Amazon', 'samsclub': "Sam's Club", 'southwest': 'Southwest'}
 
 
 def on(life) -> bool:

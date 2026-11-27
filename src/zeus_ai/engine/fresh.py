@@ -85,7 +85,7 @@ _COMMON |= {w for w in str(settings.OWNER_NAME).lower().split() if len(w) >= 4} 
 # is worded when the text goes out ({when} etc. are filled by `speak` at that moment), never when the line was made:
 # "Its deadline passed at 5pm", made at 5:01pm and sent at 9am the next day, would be wrong.
 # These sentences are the LAST resort. Each fact they
-# carry is handed to the note writer with its item first ("tell_him", see owed_facts), the writer says it in its own
+# carry is handed to the note writer with its item first ("tell_owner", see owed_facts), the writer says it in its own
 # words, code checks that it did, and only a fact still missing after one targeted fix gets its sentence here. No
 # sentence quotes the question the owner was asked: the stored question is not the text the owner was sent.
 EXPIRED = 'What I asked you {asked} about {thing} is off now: its deadline passed {when}, so I did not go ahead.'
@@ -594,7 +594,7 @@ def stamp(con, payload: dict, obs: dict) -> None:
         _f(payload)['stamp_error'] = f'{type(e).__name__}: {str(e)[:120]}'
 
 
-def closed_by_him(state: str, payload: dict) -> bool:
+def closed_by_owner(state: str, payload: dict) -> bool:
     """The owner dropped it, muted it, finished it in chat, or answered the thread personally (as against: the assistant told
     the owner and it simply ended). The name is kept for its callers (loops.py)."""
     c = payload.get('closed') or {}
@@ -671,7 +671,7 @@ def _arrival(con, row, old: dict, srcs: list, obs: dict, opp: dict):
     why = ''
     if shape in (f.get('shapes') or []):
         why = 'its deadline moved earlier' if earlier else ''
-    elif closed_by_him(row['state'], old):
+    elif closed_by_owner(row['state'], old):
         why = plan_change(old, opp)
     elif not _from_owner(obs.get('from')):
         why = 'a new message came in'
@@ -683,7 +683,7 @@ def _arrival(con, row, old: dict, srcs: list, obs: dict, opp: dict):
     return settle('reopen')
 
 
-def feedback(con, key: str, what: str, his_words: str = '') -> bool:
+def feedback(con, key: str, what: str, owners_words: str = '') -> bool:
     """The owner said a note was useful or not useful. That is recorded on the item and is NOT a dismissal: the item keeps
     its state, nothing is closed or muted, and nothing about reopening changes. (Dropping is `life drop`, stopping a
     kind of thing is `life mute`.) -> False when there is no such item."""
@@ -692,7 +692,7 @@ def feedback(con, key: str, what: str, his_words: str = '') -> bool:
         return False
     opp = json.loads(row['payload'])
     f = _f(opp)
-    f['feedback'] = ((f.get('feedback') or []) + [{'what': what, 'his_words': str(his_words)[:300], 'at': time.time()}])[-6:]
+    f['feedback'] = ((f.get('feedback') or []) + [{'what': what, 'owners_words': str(owners_words)[:300], 'at': time.time()}])[-6:]
     con.execute('UPDATE opps SET payload=? WHERE key=?', (json.dumps(opp, default=str), key))
     con.commit()
     return True
@@ -1313,7 +1313,7 @@ def _reason(text) -> str:
 def composing(con, life, now_dt: datetime, compose, keep: list, out: dict):
     """notifier.deliver: the writer to use for this note. With both switches off: the writer it was given, untouched.
     With fresh-on, a wrapper that hands the writer, inside each item, the facts code owes the owner
-    about it ("tell_him": an ask this result replaces, an ask that ended, a source that could not be read again), and
+    about it ("tell_owner": an ask this result replaces, an ask that ended, a source that could not be read again), and
     one short rule to say each once in its own words. A writer that can take them is also handed the check
     (owed_missing) for its own one targeted fix. What is still missing after that, final_text adds as code's sentence.
     When the writer chooses silence while such a fact is owed, the facts (and any real question, as plain facts) go
@@ -1335,7 +1335,7 @@ def composing(con, life, now_dt: datetime, compose, keep: list, out: dict):
             if (o.get('packet') or {}).get('ended') and isinstance(it, dict):
                 it = {'item': it.get('item'), 'result': 'ended'}    # its headline is code's own sentence: the facts say it instead
             if facts and isinstance(it, dict):
-                it = {**it, 'tell_him': [x['tell'] for x in facts]}
+                it = {**it, 'tell_owner': [x['tell'] for x in facts]}
             link = action_link(o) if links_on(life) and isinstance(it, dict) else ''
             if link:
                 it, linked = {**it, 'link': link}, True
@@ -1354,7 +1354,7 @@ def composing(con, life, now_dt: datetime, compose, keep: list, out: dict):
             # (a fact with no code sentence, a job's own failed look, leaves the writer's own silence alone: the vote
             # can no longer silence it, and code has nothing of its own to say about it)
             import composer as C
-            asks = [it for it in shown if isinstance(it, dict) and (it.get('decision_for_him') or it.get('urgency') == 'now'
+            asks = [it for it in shown if isinstance(it, dict) and (it.get('decision_for_owner') or it.get('urgency') == 'now'
                                                                     or str(it.get('headline') or '').startswith('Reminder:'))]
             single = len(keep) == 1
             out['fallback'] = 'writer chose silence while a fact was owed'
@@ -1467,10 +1467,10 @@ def _said(key: str, opp: dict, entry, single: bool) -> str:
 
 # ---- the facts code owes the owner, said by the writer -------------------------------------------------------------------------
 # Code's own sentences added after the writer read as robotic, can say a thing twice ("Scratch the Thursday question"
-# and then "This replaces what I asked ..."), and miss facts the writer never saw. So each fact is handed to the writer with its item, in plain words ("tell_him"), the writer says it, code
+# and then "This replaces what I asked ..."), and miss facts the writer never saw. So each fact is handed to the writer with its item, in plain words ("tell_owner"), the writer says it, code
 # checks that it did (tolerant word tests, below), the writer gets one targeted fix for what is missing, and only then
 # does code add its own sentence. Never both. Code still decides every fact; the writer only words it.
-SAY_RULE = ('\n- An item may carry "tell_him": notes, in your own first person, of facts the owner must hear about it. Say each once, plainly, '
+SAY_RULE = ('\n- An item may carry "tell_owner": notes, in your own first person, of facts the owner must hear about it. Say each once, plainly, '
             'with that item, in your own sentences: never copy a note as it is. When one says your result replaces an earlier ask, '
             'make that clear. Never quote an earlier ask word for word.')
 MISSING_WHY = ('the text never tells the owner this, and the owner needs it: {tell}. Say it once, in a few plain words of your own, with that item. '
@@ -1865,7 +1865,7 @@ def final_text(life, text, keep: list, carried: list, out: dict | None = None, n
 # ------------------------------------------------------------------------------------------------ the owner's yes (for `life approve`)
 def before_yes(con, life, key: str, now_dt: datetime | None = None, said_at: float | None = None) -> dict:
     """Call this when the owner says yes to an item, BEFORE anything is recorded or done (the hook for `life approve`).
-    -> {'go': bool, 'status': ..., 'tell_him': plain words for the owner, 'ask': ..., 'ready': ...}
+    -> {'go': bool, 'status': ..., 'tell_owner': plain words for the owner, 'ask': ..., 'ready': ...}
       current    go: the ask the owner is answering is the one on the item, and its source was just read again and is the same
       replaced   stop: the ask the owner is answering was retired after it changed. 'ask' and 'ready' are the NEW version;
                  show the owner that and take the owner's yes to it. The owner's old yes is never applied to the new version
@@ -1878,9 +1878,9 @@ def before_yes(con, life, key: str, now_dt: datetime | None = None, said_at: flo
     With the switch off this always answers current/go, so approve behaves exactly as before."""
     row = con.execute('SELECT key,state,sources,payload FROM opps WHERE key=?', (key,)).fetchone()
     if row is None:
-        return {'go': False, 'status': 'missing', 'tell_him': ''}
+        return {'go': False, 'status': 'missing', 'tell_owner': ''}
     if not on(life):
-        return {'go': True, 'status': 'current', 'tell_him': ''}
+        return {'go': True, 'status': 'current', 'tell_owner': ''}
     now_dt = now_dt or datetime.now(PACIFIC)
     opp = json.loads(row['payload'])
     f, p = _f(opp), opp.get('packet') or {}
@@ -1891,19 +1891,19 @@ def before_yes(con, life, key: str, now_dt: datetime | None = None, said_at: flo
 
     def new_version(status, lead):
         return {'go': False, 'status': status, 'ask': d.get('ask'), 'ready': d.get('ready'), 'retired': last,
-                'tell_him': lead + (f" Here is the new version: {d.get('ask')}" if d.get('ask') else '')}
+                'tell_owner': lead + (f" Here is the new version: {d.get('ask')}" if d.get('ask') else '')}
 
     if p.get('ended') or f.get('ended'):
         return {'go': False, 'status': 'ended', 'retired': last,
-                'tell_him': speak(str((f.get('ended') or {}).get('line_marked') or (f.get('ended') or {}).get('line') or ended_line(p, now_dt)
+                'tell_owner': speak(str((f.get('ended') or {}).get('line_marked') or (f.get('ended') or {}).get('line') or ended_line(p, now_dt)
                                       or 'I am no longer asking about that one.'), now_dt)}
     if row['state'] in ('pending', 'executing') and (f.get('redo') or last):
         redo = f.get('redo') or {}
         what = speak(redo.get('what_marked') or redo.get('what'), now_dt) or (last or {}).get('why') or 'it changed'
         return {'go': False, 'status': 'redoing', 'retired': last,
-                'tell_him': f'That one changed after I asked: {what}. I am redoing it and will bring you the new version.'}
+                'tell_owner': f'That one changed after I asked: {what}. I am redoing it and will bring you the new version.'}
     if row['state'] not in ('ready', 'surfaced') or not (d.get('ask') or d.get('ready')):
-        return {'go': True, 'status': 'current', 'tell_him': ''}        # nothing of this module's to say: approve answers as before
+        return {'go': True, 'status': 'current', 'tell_owner': ''}        # nothing of this module's to say: approve answers as before
     told_at = (opp.get('told') or {}).get('at')
     if last and (row['state'] == 'ready' or (said_at is not None and told_at and float(said_at) < float(told_at))):
         return new_version('replaced', f"That one changed after I asked: {last.get('why') or 'it changed'}.")
@@ -1911,15 +1911,15 @@ def before_yes(con, life, key: str, now_dt: datetime | None = None, said_at: flo
     if v['is'] == 'handled':
         _close_quietly(con, key, row['state'], opp, v['what'])
         con.commit()
-        return {'go': False, 'status': 'handled', 'tell_him': 'You already answered that thread yourself, so I have left it alone.'}
+        return {'go': False, 'status': 'handled', 'tell_owner': 'You already answered that thread yourself, so I have left it alone.'}
     if v['is'] == 'changed':
         send_back(con, key, row['state'], opp, 'changed', v['what'], now_dt, v['stamp'], v.get('marked'))
         con.commit()
         gone = (f.get('retired') or [None])[-1]
         gone = {**gone, 'why': speak(gone.get('why_marked') or gone.get('why'), now_dt)} if isinstance(gone, dict) else gone
         return {'go': False, 'status': 'redoing', 'retired': gone,
-                'tell_him': f"That one just changed: {v['what']}. I am redoing it and will bring you the new version."}
+                'tell_owner': f"That one just changed: {v['what']}. I am redoing it and will bring you the new version."}
     if v['is'] == 'unknown':
         return {'go': False, 'status': 'unknown',
-                'tell_him': f"I could not re-read {v['where'] or 'the source'} just now, so I have not done it yet. I will try again in a few minutes."}
-    return {'go': True, 'status': 'current', 'tell_him': '', 'ask': d.get('ask'), 'ready': d.get('ready')}
+                'tell_owner': f"I could not re-read {v['where'] or 'the source'} just now, so I have not done it yet. I will try again in a few minutes."}
+    return {'go': True, 'status': 'current', 'tell_owner': '', 'ask': d.get('ask'), 'ready': d.get('ready')}

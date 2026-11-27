@@ -218,7 +218,7 @@ def _last(rec: dict, state: str) -> dict:
     return next((h for h in reversed(rec.get('history') or []) if isinstance(h, dict) and h.get('state') == state), {})
 
 
-def his_yes(p: dict, records: list) -> tuple:
+def owners_yes(p: dict, records: list) -> tuple:
     """Is the owner's yes to this item's step on record, and did the step finish? -> (status, evidence).
       'yes'      a one-send record whose "approved" carries the owner's real message and that went ("sent"; for a step the chat
                  Zeus carried out: the item is closed as done), or the item's saved yes with the owner's words on an item closed
@@ -233,7 +233,7 @@ def his_yes(p: dict, records: list) -> tuple:
         details = rec.get('details') if isinstance(rec.get('details'), dict) else {}
         if not ap or ap.get('by') == 'team rule' or details.get('by_team') or ap.get('message_id') is None:
             continue
-        ev = {'via': 'record', 'record': rec.get('id'), 'message_id': ap.get('message_id'), 'his_words': str(ap.get('his_words') or '')[:300],
+        ev = {'via': 'record', 'record': rec.get('id'), 'message_id': ap.get('message_id'), 'owners_words': str(ap.get('owners_words') or '')[:300],
               'at': ap.get('at'), 'kind': rec.get('kind'), 'to': [str(x) for x in (details.get('to') or []) + (details.get('cc') or []) if x],
               'body': str(details.get('body') or '') if rec.get('kind') == 'email_reply' else ''}
         if rec.get('state') == 'sent' or (rec.get('kind') == 'step' and done and rec.get('state') in ('sending', 'unknown')):
@@ -248,10 +248,10 @@ def his_yes(p: dict, records: list) -> tuple:
         send = ap.get('send')
         if isinstance(send, dict) and send.get('state') in ('sending', 'unknown'):
             return 'pending', None
-        words = ' '.join(str(ap.get('his_words') or '').split())
+        words = ' '.join(str(ap.get('owners_words') or '').split())
         if len(words) >= 2:
             mid = str((ref or {}).get('ref') or '') if isinstance(ref, dict) else ''
-            return 'yes', {'via': 'item', 'message_id': mid[5:] if mid.startswith('chat:') else None, 'his_words': words[:300], 'at': ap.get('at'),
+            return 'yes', {'via': 'item', 'message_id': mid[5:] if mid.startswith('chat:') else None, 'owners_words': words[:300], 'at': ap.get('at'),
                            'to': [], 'body': ''}
     return 'none', None
 
@@ -362,7 +362,7 @@ def errand(con, key: str, state: str, p: dict) -> dict | None:
     steps = gated_steps(p)
     if not steps or closed.get('state') != 'done':
         return None
-    status, ev = his_yes(p, _records(con, key))
+    status, ev = owners_yes(p, _records(con, key))
     try:
         finished = float(closed.get('at') or 0)
     except (TypeError, ValueError):
@@ -589,7 +589,7 @@ def make_offer(con, life, kind: str, group: list, now_dt) -> str | None:
     sk = {'kind': kind, 'family': newest['family'], 'scope': newest['scope'], 'classes': [MESSAGE],
           'to': list(newest['to']), 'names': list(newest['names']), 'words': words, 'ask': ask_text(group), 'day': now_dt.date().isoformat(),
           'examples': [{'key': x['key'], 'title': x['title'], 'finished_at': x['finished_at'],
-                        'yes': {k: (x['evidence'] or {}).get(k) for k in ('via', 'message_id', 'his_words', 'at')}} for x in group[-4:]]}
+                        'yes': {k: (x['evidence'] or {}).get(k) for k in ('via', 'message_id', 'owners_words', 'at')}} for x in group[-4:]]}
     _mark(life, kind, state='offered', item=key, offered_at=now_dt.timestamp(), family=sk['family'], scope=sk['scope'])   # marked BEFORE the item exists: a crash in between means never asked, not asked twice
     now = time.time()
     payload = {**opp, 'urgency': urgency, 'decision': decision, '_source': MARK, 'packet': packet_for(group), 'ready_at': now, MARK: sk}
@@ -941,7 +941,7 @@ def answer(con, r, p: dict, words: str, life, close, grants_load, grants_save, r
         return 1
     # The quoted words only help pick among the owner's messages since the offer: the newest one that carries them, and when
     # none does (a tidied typo, a short "y"), simply the owner's newest one. What the owner really wrote decides, never the quote (the
-    # same rule as onesend.his_reply).
+    # same rule as onesend.owners_reply).
     quote = H._flat(words)
     hits = [m for m in msgs if quote and quote in H._flat(m['text'])]
     msg = hits[-1] if hits else (msgs[-1] if msgs else None)
@@ -983,7 +983,7 @@ def answer(con, r, p: dict, words: str, life, close, grants_load, grants_save, r
             return 9
     if ans == 'no':
         close(con, r, 'declined', 'zeus chat, their no to a standing-OK offer', 'the owner said no: ' + msg['text'][:200])
-        _mark(life, sk['kind'], state='no', quiet_from=now, his_words=msg['text'][:300], message_id=msg.get('id'))
+        _mark(life, sk['kind'], state='no', quiet_from=now, owners_words=msg['text'][:300], message_id=msg.get('id'))
         print('Recorded their no. Nothing changes: this kind of thing keeps waiting for their yes each time, and the owner is not asked about it again for a month.')
         return 0
     if ans != 'yes':
@@ -999,7 +999,7 @@ def answer(con, r, p: dict, words: str, life, close, grants_load, grants_save, r
     g = grants_load()
     entry = g.get(family) if isinstance(g.get(family), dict) else None
     scope = {'scope': sk['scope'], 'classes': classes, 'to': list(sk.get('to') or []), 'names': list(sk.get('names') or []), 'words': sk.get('words'),
-             'his_words': msg['text'][:600], 'message_id': msg.get('id'), 'said_at': msg['at'], 'offer': key, 'asked': sk.get('ask')}
+             'owners_words': msg['text'][:600], 'message_id': msg.get('id'), 'said_at': msg['at'], 'offer': key, 'asked': sk.get('ask')}
     if entry is not None and not isinstance(entry.get('only'), list):
         close(con, r, 'done', 'zeus chat, their answer to a standing-OK offer', 'a wider standing OK of theirs already covers this kind', {MARK: 'covered'})
         _mark(life, sk['kind'], state='covered')
@@ -1008,7 +1008,7 @@ def answer(con, r, p: dict, words: str, life, close, grants_load, grants_save, r
     if entry is not None:
         entry['only'] = [s for s in entry['only'] if not (isinstance(s, dict) and s.get('scope') == sk['scope'])] + [scope]
     else:
-        g[family] = {'at': datetime.now().astimezone().isoformat(), 'note': msg['text'][:600], 'his_words': msg['text'][:600], 'message_id': msg.get('id'),
+        g[family] = {'at': datetime.now().astimezone().isoformat(), 'note': msg['text'][:600], 'owners_words': msg['text'][:600], 'message_id': msg.get('id'),
                      'said_at': msg['at'], 'title': ('Only ' + str(sk.get('words') or ''))[:300], 'from_item': key, 'only': [scope]}
     grants_save(g)
     try:
@@ -1019,7 +1019,7 @@ def answer(con, r, p: dict, words: str, life, close, grants_load, grants_save, r
     # Not closed "by zeus chat": the after-the-yes readback (actcheck.py) reads those as a prepared step that was carried out.
     close(con, r, 'done', 'zeus chat, their answer to a standing-OK offer', 'the owner said yes: this narrow kind is handled without asking from now on',
           {MARK: 'granted', 'family': family, 'scope': sk['scope'], 'message_id': msg.get('id')})
-    _mark(life, sk['kind'], state='yes', his_words=msg['text'][:300], message_id=msg.get('id'))
+    _mark(life, sk['kind'], state='yes', owners_words=msg['text'][:300], message_id=msg.get('id'))
     print(f'Standing OK recorded, only for {sk.get("words")}. From now on your pipes do that step without asking and tell the owner after. '
           'It covers nothing else: anything with money, a booking, their calendar, a delete, or anyone else in it still waits for their yes. '
           f'Tell the owner that in one short line. If the owner takes it back: life ungrant {key}')

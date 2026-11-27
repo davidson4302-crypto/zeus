@@ -1,5 +1,5 @@
 {
- "about": "Zeus purchase lock store table. Patterns are Python regexes, matched case-insensitively. Button labels are normalised first (lower case, money amounts and punctuation removed, spaces collapsed) and must match a label pattern as a WHOLE, so 'Place order' matches but 'Purchase history' does not. 'strong' labels are a purchase button on any page of a store below (and on any checkout page); 'weak' labels count only on a checkout page. Store ids match zeus-login: walmart amazon samsclub southwest ralphs. A store with a 'booking' block is a booking store: on its final review / purchase page the lock also reads the trip (flight numbers, the date of each flight, times, airport codes, passenger names and count, fare, refund words) and a press passes only when they match the trip in the owner's yes. Only booking kind 'flight' has a checker; any other kind fails closed. All booking patterns are general knowledge of Southwest's pages, not read off the real site (unverified).",
+ "about": "Zeus purchase lock store table. Patterns are Python regexes, matched case-insensitively. Button labels are normalised first (lower case, money amounts and punctuation removed, spaces collapsed) and must match a label pattern as a WHOLE, so 'Place order' matches but 'Purchase history' does not. 'strong' labels are a purchase button on any page of a store below (and on any checkout page); 'weak' labels count only on a checkout page. Store ids match zeus-login: walmart amazon samsclub southwest. A store with a 'booking' block is a booking store: on its final review / purchase page the lock also reads the trip (flight numbers, the date of each flight, times, airport codes, passenger names and count, fare, refund words) and a press passes only when they match the trip in the owner's yes. Only booking kind 'flight' has a checker; any other kind fails closed. All booking patterns are general knowledge of Southwest's pages, not read off the real site (unverified).",
  "version": 2,
  "generic": {
   "commit_strong": [
@@ -219,27 +219,6 @@
     "order total"
    ],
    "orders_url": "https://www.amazon.com/gp/css/order-history"
-  },
-  "ralphs": {
-   "name": "Ralphs",
-   "aliases": [
-    "ralphs",
-    "ralph's",
-    "ralphs.com",
-    "kroger"
-   ],
-   "hosts": [
-    "ralphs.com",
-    "kroger.com"
-   ],
-   "commit_url": [
-    "^/checkout"
-   ],
-   "total_labels": [
-    "estimated total",
-    "order total"
-   ],
-   "orders_url": "https://www.ralphs.com/mypurchases"
   },
   "southwest": {
    "name": "Southwest",

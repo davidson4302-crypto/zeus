@@ -432,7 +432,7 @@ def names(P, it: dict) -> set:
     counts every capitalised word, so "Nothing is set yet" would read as being about that thing)."""
     words = P.dictionary()
     out = set()
-    for field in ('what', 'his_call', 'you_found', 'you_noticed', 'facts'):
+    for field in ('what', 'owners_call', 'you_found', 'you_noticed', 'facts'):
         txt = str(it.get(field) or '')
         for m in re.finditer(r"\b[A-Z][a-z]{2,}\b", txt):
             w = m.group(0).lower()

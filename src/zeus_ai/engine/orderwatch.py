@@ -1,6 +1,6 @@
 """orderwatch: every store order is watched until it is delivered.
 
-Every order Zeus or the owner places at a store in the store table (Walmart, Sam's Club, Amazon, Ralphs) is watched until it
+Every order Zeus or the owner places at a store in the store table (Walmart, Sam's Club, Amazon) is watched until it
 arrives. On time = silent. Late, stuck, or the owner is needed = ONE short line, once per order per reason. It only READS:
 it never calls zeus-buy and never changes, cancels, reorders or buys anything. Flights and Southwest are not orders
 (they are watched elsewhere). Pharmacy notices with no order number ("Your prescription is ready") belong to the
@@ -131,8 +131,6 @@ STORES = {
                'senders': ('auto-confirm@amazon.com', 'shipment-tracking@amazon.com', 'order-update@amazon.com', 'no-reply@amazon.com'),
                'number': re.compile(r'(?<![\d-])(\d{3}-\d{7}-\d{7})(?![\d-])'),
                'page': 'https://www.amazon.com/your-orders/order-details?orderID={id}'},      # the address Amazon's own order mail links to
-    'ralphs': {'name': 'Ralphs', 'domain': 'ralphs.com', 'more_domains': ('kroger.com',), 'senders': (),
-               'number': re.compile(r'Order\s*(?:number\b:?|no\.?:?|#|id\b:?)\s*#?\s*([A-Z0-9][A-Z0-9-]{5,23})', re.I), 'page': None},
 }
 # A store's order LIST page (one fixed address, no order number in it), read when no single-order address is set. Walmart's
 # list page ("Purchase history") shows item names, a type, a status line such as
@@ -142,7 +140,7 @@ LIST_PAGES = {'walmart': 'https://www.walmart.com/orders'}
 NOT_ORDER_SENDERS = frozenset(('samsclub@em.samsclub.com', 'feedback@reviews.walmart.com', 'walmartcustomerexperience@feedback.walmart.com', 'return@amazon.com',
                                'store-news@amazon.com', 'account-update@amazon.com', 'digital-no-reply@amazon.com'))
 # Subject rules for the exact subjects of the real development mail, first match wins. Kinds: placed, progress, shipped,
-# out, delivered, picked_up, ready_pickup, delayed, new_estimate, cancelled_by_him, take_action, ignore. A subject none
+# out, delivered, picked_up, ready_pickup, delayed, new_estimate, cancelled_by_owner, take_action, ignore. A subject none
 # of these knows is read by word FAMILY (FAMILIES below: the subject first, then the mail's own first lines), for every
 # store alike; only what no family knows either is `unrecognized` (the model reads it).
 RULES = {
@@ -172,13 +170,12 @@ RULES = {
         (r'^delivered\b', 'delivered'),
         (r'^delivery update\b', 'delayed'),
         (r'^delivery estimate update\b', 'new_estimate'),
-        (r'^items? cancel+ed successfully', 'cancelled_by_him'),
+        (r'^items? cancel+ed successfully', 'cancelled_by_owner'),
         (r'subscription|subscribe & save|^review your upcoming delivery|^undeliverable items', 'ignore'),   # Subscribe & Save housekeeping
     ),
-    'ralphs': (),
 }
 NEEDS = ('substitution', 'action', 'window', 'missed', 'payment', 'signature', 'pickup', 'cancelled')
-MODEL_KINDS = ('progress', 'delivered', 'delayed', 'substitution', 'action', 'window', 'missed', 'payment', 'signature', 'pickup', 'cancelled', 'cancelled_by_him',
+MODEL_KINDS = ('progress', 'delivered', 'delayed', 'substitution', 'action', 'window', 'missed', 'payment', 'signature', 'pickup', 'cancelled', 'cancelled_by_owner',
                'not_an_order')
 # ---- word families -----------------------------------------------------------------------------------------------------
 # The same kind of notice is worded many ways and differently by each store. A kind is read from a FAMILY of wordings,
@@ -233,7 +230,7 @@ FAMILIES = (('ignore', F_PHARMACY), ('ignore', F_SUBSCRIPTION), ('missed', F_MIS
 FAMILIES = tuple((k, re.compile(rx, re.I)) for k, rx in FAMILIES)
 RX_NOT_DELIVERED, RX_SUBSTITUTION, RX_WINDOW, RX_ACTION = (re.compile(x, re.I | re.S) for x in (F_NOT_DELIVERED, F_SUBSTITUTION, F_WINDOW, F_ACTION))
 WEAK_KINDS = ('progress', 'placed', 'shipped', 'out')            # a subject that says only "normal progress"
-STRONG_BODY = ('missed', 'payment', 'signature', 'cancelled', 'cancelled_by_him', 'take_action', 'window')      # what needs the owner, said in the mail's own first lines
+STRONG_BODY = ('missed', 'payment', 'signature', 'cancelled', 'cancelled_by_owner', 'take_action', 'window')      # what needs the owner, said in the mail's own first lines
 BODY_LINES = 14                   # the mail's own first lines: its headline and first sentences, where a store says what the notice is
 # In the body a bare step label ("Delivered", "Shipped": the tracker every Amazon mail prints) is not a statement.
 BODY_KINDS = ('missed', 'payment', 'signature', 'cancelled', 'take_action', 'window', 'delayed', 'picked_up', 'delivered', 'ready_pickup')
@@ -251,7 +248,7 @@ CONFIRM = {
     'signature': re.compile(F_SIGNATURE + r"|signature", re.I),
     'pickup': re.compile(F_READY_PICKUP, re.I),
     'cancelled': re.compile(r'cancel+', re.I),
-    'cancelled_by_him': re.compile(r'cancel+', re.I),
+    'cancelled_by_owner': re.compile(r'cancel+', re.I),
     'delayed': re.compile(F_DELAYED + '|' + F_NEW_DATE + r'|delay|later', re.I),
 }
 BY_HIM = re.compile(r'cancel+ed successfully|as (?:you )?requested|you cancel+ed|your cancel+ation request', re.I)
@@ -485,7 +482,7 @@ def family(words: str, body: bool = False):
                 continue
             return kind
         if kind == 'cancelled' and rx.search(w):
-            return 'cancelled_by_him' if BY_HIM.search(w) else 'cancelled'
+            return 'cancelled_by_owner' if BY_HIM.search(w) else 'cancelled'
         if rx.search(w):
             return kind
     return None
@@ -639,7 +636,7 @@ def parse(store: str, kind: str, mail: dict, extract=None, budget: dict | None =
     if not ev['orders']:
         return None
     if kind == 'cancelled' and BY_HIM.search(both):
-        ev['kind'] = kind = 'cancelled_by_him'
+        ev['kind'] = kind = 'cancelled_by_owner'
     if kind == 'cancelled':        # the whole order, or only part of it ("We had to cancel an item in your order")?
         head = subject + '\n' + '\n'.join(text.splitlines()[:BODY_LINES])
         ev['partial'] = bool(re.search(r"cancel\w*\s+(?:an?|one|\d+|some|several|the following|part of)\s+(?:of (?:the |your )?)?items?|items?\b.{0,30}\b(?:was|were|has been|have been) cancel+ed|"
@@ -759,7 +756,7 @@ def parse(store: str, kind: str, mail: dict, extract=None, budget: dict | None =
             ev['said'] = 'a later day'
         if kind in ('shipped', 'out', 'delivered'):
             ev['tail'] = _tail(subject)
-        if kind == 'cancelled_by_him':
+        if kind == 'cancelled_by_owner':
             m = re.search(r'successfully:\s*(\d+)\b', subject, re.I)
             ev['count'] = int(m.group(1)) if m else None
         if kind == 'placed':
@@ -812,7 +809,7 @@ def _ask(extract, budget, store, subject, text, when):
               'substitution or what to do about an unavailable item, often by a time); action (the store asks the owner to do something else about this order, '
               'often by a time); window (the owner must pick a delivery or pickup time); missed (a delivery attempt failed or was missed); payment (a payment '
               'problem); signature (someone must be home or sign); pickup (it is ready and waiting for the owner to pick up); cancelled (the store cancelled the '
-              'order or part of it); cancelled_by_him (the store confirms a cancellation the owner asked for); not_an_order (marketing, a survey, a return or '
+              'order or part of it); cancelled_by_owner (the store confirms a cancellation the owner asked for); not_an_order (marketing, a survey, a return or '
               'refund, a subscription or account notice, a pharmacy notice with no order). "promised_day": the day the store now says it arrives, '
               'YYYY-MM-DD, or "". "window_end": the end of a delivery or pickup window, HH:MM, or "". "ship_by": the day the store says it ships by, '
               'YYYY-MM-DD, or "".')
@@ -868,7 +865,7 @@ def _number_ok(store: str, number: str) -> str:
     if store == 'samsclub':
         n = re.sub(r'\D', '', n)
         return n if 10 <= len(n) <= 20 else ''
-    m = STORES[store]['number'].fullmatch(n) if store != 'ralphs' else re.fullmatch(r'[A-Za-z0-9-]{6,24}', n)
+    m = STORES[store]['number'].fullmatch(n)
     return n if m else ''
 
 
@@ -915,7 +912,7 @@ def apply(data: dict, ev: dict) -> list:
             linked = [o for o in box.get('orders') or [] if o not in ids]
             box['delivered'] = at
     touched = []
-    terminal = kind in ('delivered', 'picked_up', 'cancelled_by_him')
+    terminal = kind in ('delivered', 'picked_up', 'cancelled_by_owner')
     for n, number in enumerate(ids + linked):
         key = f'{store}:{number}'
         rec = data['orders'].get(key)
@@ -958,7 +955,7 @@ def apply(data: dict, ev: dict) -> list:
             rec['part_note'] = 'part of it has arrived; the rest is due ' + promise_words(rec['promise'])
             continue
         if terminal:
-            if kind == 'cancelled_by_him':
+            if kind == 'cancelled_by_owner':
                 if rec.get('count') and ev.get('count') and int(ev['count']) < int(rec['count']):
                     rec['count'] = int(rec['count']) - int(ev['count'])      # part of it: the rest is still coming
                     continue
@@ -1569,7 +1566,7 @@ def decide(rec: dict, now_dt: datetime, mail_fresh: bool) -> dict:
     # not a second thing to tell. A substitution is the exception once told: the store goes ahead by itself.
     asking = [r for r, _ in out['speak']]
     gone = {r for r, _ in out['too_late']} | set(passed)
-    waiting_on_him = bool(asking) or any(k in NEEDS and k != 'substitution' and k not in gone and not _after(rec, n['at'], ('shipped', 'out', 'delivered', 'picked_up'))
+    waiting_on_owner = bool(asking) or any(k in NEEDS and k != 'substitution' and k not in gone and not _after(rec, n['at'], ('shipped', 'out', 'delivered', 'picked_up'))
                                          for k, n in (rec.get('needs') or {}).items())
     # late: the store says so. A delay notice read after the new time it gave has itself passed is old news: it is not
     # told as "now expected ..."; whether the order is late NOW is then settled the ordinary way (promise passed, the page).
@@ -1580,11 +1577,11 @@ def decide(rec: dict, now_dt: datetime, mail_fresh: bool) -> dict:
         delay = None
     if asking:
         out['state'] = 'the store is waiting on the owner (' + ', '.join(asking) + ')'
-    elif delay and 'late' not in told and not waiting_on_him:
+    elif delay and 'late' not in told and not waiting_on_owner:
         out['speak'].append(('late', {'said': delay.get('said'), 'now': delay.get('now'), 'was': delay.get('was'), 'at': delay.get('at'), 'by': 'store', 'part': delay.get('part') or '', 'src': delay.get('src'), 'thread': delay.get('thread'),
                                       'eta': delay.get('eta') or ''}))
     # late: the promised time passed with no delivered word
-    elif waiting_on_him and dl is not None and now_dt > dl:
+    elif waiting_on_owner and dl is not None and now_dt > dl:
         out['state'] = 'past its promised time, and the store is still waiting on the owner: the owner was told that; not a second line'
     elif dl is not None and now_dt > dl and 'late' not in told and not ready:
         page = rec.get('page') or {}
@@ -1608,7 +1605,7 @@ def decide(rec: dict, now_dt: datetime, mail_fresh: bool) -> dict:
             out['speak'].append(('late', {'by': 'time', 'promised': promise_words(rec.get('promise')), 'page': page.get('line') or '', 'at': page.get('at'),
                                           'split': bool(page.get('split') or (rec.get('promise') or {}).get('part'))}))
     # stuck: a promised ship date is 3 or more days past with no shipped word
-    if rec.get('ship_by') and 'stuck' not in told and 'late' not in told and not waiting_on_him and not any(r == 'late' for r, _ in out['speak']):
+    if rec.get('ship_by') and 'stuck' not in told and 'late' not in told and not waiting_on_owner and not any(r == 'late' for r, _ in out['speak']):
         try:
             d = date.fromisoformat(str(rec['ship_by'])[:10])
             ship_end = datetime(d.year, d.month, d.day, 23, 59, 59, tzinfo=PACIFIC)
@@ -3249,7 +3246,7 @@ def describe(rec: dict) -> str:
     last = (rec.get('evidence') or [None])[-1]
     names = {'placed': 'order confirmed', 'progress': 'an update', 'shipped': 'shipped', 'out': 'out for delivery', 'delivered': 'delivered', 'picked_up': 'picked up',
              'delayed': 'the store said it is delayed', 'new_estimate': 'the store gave a new day', 'ready_pickup': 'ready for pickup',
-             'cancelled_by_him': 'cancelled by the owner'}
+             'cancelled_by_owner': 'cancelled by the owner'}
     if rec.get('closed'):
         parts.append('Ended ' + _say_time(rec['closed'].get('at')) + ': ' + str(rec['closed'].get('why')) + '.')
     else:

@@ -53,8 +53,8 @@ KINDS = ('owner_message', 'standing_grant', 'team_rule', 'none')          # the 
 SENDS = ('email_reply', 'send', 'email', 'message', 'text', 'post', 'reply')
 SPENDS = ('purchase', 'order', 'booking', 'payment')
 OWN_RULES = SPENDS + ('delete', 'calendar_change', 'calendar', 'sign_in')   # the team rule never reaches these
-FREE = ('read', 'prepare', 'draft', 'research', 'look_up', 'tell_him', 'note')   # nothing in these needs the owner's yes
-FLAGS = ('approved', 'approval', 'authorized', 'authorised', 'authority', 'authority_ref', 'his_yes', 'confirmed', 'approved_by', 'granted', 'ok')
+FREE = ('read', 'prepare', 'draft', 'research', 'look_up', 'tell_owner', 'note')   # nothing in these needs the owner's yes
+FLAGS = ('approved', 'approval', 'authorized', 'authorised', 'authority', 'authority_ref', 'owners_yes', 'confirmed', 'approved_by', 'granted', 'ok')
 RECENT = 15 * 60            # the older road: the owner's yes must be this fresh (onesend.RECENT)
 PURCHASE_NOTE = "the purchase lock still checks the owner's yes to that store and total at checkout; this answer never replaces it"
 
@@ -246,7 +246,7 @@ def resolve(con, life, action, now=None) -> dict:
                 msg, trouble = _his_message(life, yes['message_id'], yes.get('said_at'))
                 ref = f"chat:{yes['message_id']}"
                 if msg is not None:
-                    words = ' '.join(str(yes.get('his_words') or '').lower().split())
+                    words = ' '.join(str(yes.get('owners_words') or '').lower().split())
                     if words and words[:120] not in ' '.join(str(msg['text']).lower().split()):
                         reasons.append('the message this yes points at does not say the words that were recorded')
                     else:
@@ -259,7 +259,7 @@ def resolve(con, life, action, now=None) -> dict:
     # (b) a standing OK whose kind of item covers this one
     fam, entry = grant_for(life, item)
     if entry is not None:
-        sourced = bool(entry.get('his_words')) and entry.get('message_id') is not None
+        sourced = bool(entry.get('owners_words')) and entry.get('message_id') is not None
         return done(True, 'standing_grant', f'grant:{fam}' + (f":chat:{entry['message_id']}" if sourced else ''),
                     'their standing OK for this kind of item' + ('' if sourced else ' (on file with no message of theirs recorded beside it)'),
                     'their words and their message are on the standing OK' if sourced else 'the standing OK is on file; no message of theirs is recorded with it')

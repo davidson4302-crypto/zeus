@@ -8,7 +8,7 @@ What happens here, once a day, on the first 5-minute tick after 8:30pm on the ow
   1. Read the day's direct chat between the owner and Zeus (chats.py, read-only).
   2. ONE model call marks the few places where they corrected Zeus or said how they want things done.
   3. Code checks every item: their exact words must be in the message the model named, or the item is dropped.
-     (Text the gateway wraps around a message, such as a photo's attached rules, is cut away first: his_words.)
+     (Text the gateway wraps around a message, such as a photo's attached rules, is cut away first: owners_words.)
   4. Code works out the score from the checked items and adds one row to alignment-log.jsonl.
   5. Code rebuilds how-we-work.md from the log. There is no second model call: the page is the log, sorted,
      aged, de-duplicated and cut to size.
@@ -214,7 +214,7 @@ STAMPED = re.compile(r'^\[[^\]]{12,}\]|^\(attachment\)|<[a-z][a-z_]{2,}>|Linked 
                      r'|\[(?:Thread context|End of thread context|New message|Image attached at|screenshot|The user sent|Photon content)', re.I | re.M)
 
 
-def his_words(text) -> str:
+def owners_words(text) -> str:
     """What the owner themselves typed in this message, or '' when it is a photo, a voice note, another sender's words or
     anything else wrapped by the gateway. An emailed message keeps its subject and body and loses the relay's lead-in
     and their signature."""
@@ -386,11 +386,11 @@ def verify(out: dict, his: list) -> tuple:
     return kept, dropped
 
 
-def rate(his_count: int, corrected_count: int):
+def rate(owners_count: int, corrected_count: int):
     """Share of their messages that needed no correction. No messages means no score, not a perfect one."""
-    if his_count <= 0:
+    if owners_count <= 0:
         return None
-    return round((his_count - min(corrected_count, his_count)) / his_count, 4)
+    return round((owners_count - min(corrected_count, owners_count)) / owners_count, 4)
 
 
 # ---- the page, built by code from the log ----------------------------------------------------------------------------
@@ -539,23 +539,23 @@ def score(life_home, days: int = 7, now=None) -> dict:
     forty-message one. Days with no message from them have no rate and do not count."""
     today = _pacific(now).date()
     first = (today - timedelta(days=days - 1)).isoformat()
-    daily = [{'day': r['day'], 'his_messages': int(r.get('his_messages') or 0), 'corrections': int(r.get('corrections') or 0),
+    daily = [{'day': r['day'], 'owners_messages': int(r.get('owners_messages') or 0), 'corrections': int(r.get('corrections') or 0),
               'correction_free_rate': r.get('correction_free_rate')}
              for r in read_log(life_home) if first <= r['day'] <= today.isoformat()]
-    msgs = sum(d['his_messages'] for d in daily)
-    corr = sum(min(d['corrections'], d['his_messages']) for d in daily)
+    msgs = sum(d['owners_messages'] for d in daily)
+    corr = sum(min(d['corrections'], d['owners_messages']) for d in daily)
     avg = rate(msgs, corr)
     if avg is None:
         line = 'No chats with them reviewed in the last %d days.' % days
     else:
         line = 'No correction needed on %d of their %d messages in the last %d days (%d%%).' % (msgs - corr, msgs, days, round(avg * 100))
-    return {'days': daily, 'average': avg, 'his_messages': msgs, 'corrections': corr, 'days_reviewed': len(daily), 'line': line}
+    return {'days': daily, 'average': avg, 'owners_messages': msgs, 'corrections': corr, 'days_reviewed': len(daily), 'line': line}
 
 
 # ---- the nightly run -----------------------------------------------------------------------------------------------
 
 def _own_words(msgs: list) -> list:
-    return [{**m, 'text': his_words(m['text'])} if m['who'] == 'owner' else m for m in msgs]
+    return [{**m, 'text': owners_words(m['text'])} if m['who'] == 'owner' else m for m in msgs]
 
 
 def run(now, life_home, complete=None, dry: bool = False, day=None, path=None) -> dict:
@@ -570,7 +570,7 @@ def run(now, life_home, complete=None, dry: bool = False, day=None, path=None) -
               but leaves together-state.json alone, so tonight's own review still happens.
     path      another chat store (tests).
     -> {'status': 'early' | 'already' | 'waiting' | 'model_failed' | 'no_messages' | 'done', ...counts}
-    his_messages counts messages with words of theirs that could be read; a photo or voice note with no text is
+    owners_messages counts messages with words of theirs that could be read; a photo or voice note with no text is
     counted apart as no_words and is left out of the score (nobody can tell whether it needed a correction)."""
     now_dt = _pacific(now)
     life = Path(life_home)
@@ -590,7 +590,7 @@ def run(now, life_home, complete=None, dry: bool = False, day=None, path=None) -
     msgs = _own_words(C.messages(since, until, path=path))   # a store that cannot be read raises: never "a quiet day"
     his = [m for m in msgs if m['who'] == 'owner' and m['text']]
     no_words = sum(1 for m in msgs if m['who'] == 'owner' and not m['text'])
-    report = {'status': 'done', 'day': target.isoformat(), 'his_messages': len(his), 'no_words': no_words, 'dry': bool(dry), 'replay': replay}
+    report = {'status': 'done', 'day': target.isoformat(), 'owners_messages': len(his), 'no_words': no_words, 'dry': bool(dry), 'replay': replay}
     kept, dropped, cost = {k: [] for k in KINDS}, [], None
     if his:
         lead = _own_words(C.messages(since - LEAD_MINUTES * 60, since, path=path))[-LEAD_MAX:]
@@ -604,7 +604,7 @@ def run(now, life_home, complete=None, dry: bool = False, day=None, path=None) -
     else:
         report['status'] = 'no_messages'            # a row is still written, so the day shows as looked at
     corrected = len({c['message_id'] for c in kept['corrections']})
-    row = {'day': target.isoformat(), 'his_messages': len(his), 'no_words': no_words, 'corrections': corrected,
+    row = {'day': target.isoformat(), 'owners_messages': len(his), 'no_words': no_words, 'corrections': corrected,
            'correction_free_rate': rate(len(his), corrected), 'correction_items': kept['corrections'],
            'frictions': kept['frictions'], 'boundaries': kept['boundaries'], 'do_not_raise': kept['do_not_raise'],
            'dropped': dropped, 'window': [since, until], 'at': now_dt.timestamp(), 'cost': cost}

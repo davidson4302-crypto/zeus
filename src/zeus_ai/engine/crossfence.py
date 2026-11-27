@@ -161,7 +161,7 @@ def newest_message(life):
         return int(con.execute('SELECT COALESCE(MAX(id), 0) FROM messages').fetchone()[0])
 
 
-def his_messages(life, after: int, since: float | None = None) -> list:
+def owners_messages(life, after: int, since: float | None = None) -> list:
     """The owner's own messages with a row number above `after`, oldest first, from every surface they use (phone,
     Slack, the Hermes app). The same rules as chats.messages for what is the owner's: a real arrived message, their own
     typed words only, never a shared room, a background job or another program, and never text typed for them through
@@ -266,7 +266,7 @@ def _new(life, key: str, p: dict, ex: dict | None = None) -> tuple:
     if mark is not None and isinstance(again, int) and not isinstance(again, bool):
         mark = min(int(mark), again)
     if mark is not None:
-        ask += [{'kind': 'message', 'text': m['text'], 'id': m['id']} for m in his_messages(life, int(mark))]
+        ask += [{'kind': 'message', 'text': m['text'], 'id': m['id']} for m in owners_messages(life, int(mark))]
     return sure, ask
 
 
@@ -737,7 +737,7 @@ def _unread(life, p: dict, strict: bool = False) -> list:
         if strict:
             newest_message(life)                      # no bookmark, so nothing is quoted; but a store that cannot be read is still said
         return []
-    msgs = his_messages(life, mark, time.time() - RECENT_HOURS * 3600)
+    msgs = owners_messages(life, mark, time.time() - RECENT_HOURS * 3600)
     answers = _judged(life, p, [{'kind': 'message', 'text': m['text'], 'id': m['id']} for m in msgs], ask=True)
     got = [m | {'answer': a} for m, a in zip(msgs, answers) if a in ('yes', 'unsure')]
     waiting = [m for m, a in zip(msgs, answers) if a not in ANSWERS]

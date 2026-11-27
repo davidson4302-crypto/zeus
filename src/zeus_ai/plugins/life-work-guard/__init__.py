@@ -37,7 +37,7 @@ when this plugin did not load at all. No switch file: taking cron.deliver_gate o
 Answering the owner at night: if the owner texted first, what Zeus sends as part of answering them (a file, a link, a
 second message) goes right away; what Zeus starts on its own still waits. Zeus's direct reply never comes through
 here. What does is a `hermes send` its chat turn runs in its terminal, and that one is let through only when all
-three can be shown (answering_him below, then the engine's contact_hold(reply=True)):
+three can be shown (answering_owner below, then the engine's contact_hold(reply=True)):
   1. it was run by Zeus's own live chat turn with the owner. Hermes writes each turn's facts into every command the
      turn runs (HERMES_SESSION_PLATFORM / _USER_ID / _CHAT_ID / _CHAT_TYPE; gateway/run.py _set_session_env, bridged
      by tools/environments/local.py). A scheduled job's commands carry an empty platform and HERMES_CRON_SESSION=1
@@ -445,7 +445,7 @@ def owner_clock():
 OWNER_IDS = ('plugins', 'entries', 'zeus-work', 'settings', 'owner', 'owner_ids')     # where Zeus's config lists the owner's own addresses
 
 
-def his_addresses() -> set:
+def owners_addresses() -> set:
     """The owner's own addresses as Zeus's config lists them, lower-cased: {'photon:+1...', 'slack:u...'}. Read each time."""
     from hermes_cli.config import load_config_readonly
     node = load_config_readonly()
@@ -454,7 +454,7 @@ def his_addresses() -> set:
     return {str(item).strip().casefold() for item in (node or []) if isinstance(item, str) and ':' in item}
 
 
-def answering_him(job) -> bool:
+def answering_owner(job) -> bool:
     """Was this `hermes send` run by Zeus's own private chat turn with the owner, and does it go to the owner? (Points
     1 and 3 in the note at the top; the clock and their last message are the engine's part.) Any doubt: False."""
     from gateway.session_context import get_session_env as fact
@@ -465,7 +465,7 @@ def answering_him(job) -> bool:
     chat = fact('HERMES_SESSION_CHAT_ID', '').strip().casefold()
     if not (platform and author and chat) or fact('HERMES_SESSION_CHAT_TYPE', '').strip().casefold() != 'dm':
         return False                                    # no live turn behind this command, or not a private chat
-    his = his_addresses()
+    his = owners_addresses()
     if f'{platform}:{author}' not in his:
         return False                                    # somebody else's turn
     where, _, ref = str((job or {}).get('deliver') or '').strip().partition(':')
@@ -481,7 +481,7 @@ def deliver_gate(job=None, content=None, for_failure=False, surface='cron', **_)
     """Hermes asks before a scheduled result or a `hermes send` message leaves Zeus. -> {'open': True}, or
     {'deliver_after': epoch seconds} to make the whole message wait. First the answer for something Zeus started on
     its own (reply=False). Only if that says "wait", and only for `hermes send`, the one exception is tried: its own
-    chat turn answering the owner (answering_him), with their message no older than the engine's REPLY_WINDOW. If that
+    chat turn answering the owner (answering_owner), with their message no older than the engine's REPLY_WINDOW. If that
     cannot be shown, the first answer stands and the message waits for the end of quiet hours. Trouble with the first answer: no answer at
     all, which Hermes treats as closed (a scheduled result is parked and asked about again; `hermes send` says no)."""
     try:
@@ -495,7 +495,7 @@ def deliver_gate(job=None, content=None, for_failure=False, surface='cron', **_)
     if wait is None:
         return {'open': True}
     try:
-        if surface == 'send' and answering_him(job) and clock.contact_hold(reply=True, life=life) is None:
+        if surface == 'send' and answering_owner(job) and clock.contact_hold(reply=True, life=life) is None:
             return {'open': True}
     except Exception:
         pass
@@ -706,7 +706,7 @@ def helper_guard(tool_name, args, session_id):
     return NOT_HELPER
 
 
-def his_private_turn() -> bool:
+def owners_private_turn() -> bool:
     """Is the current turn the owner's own message in a private chat with Zeus? (the facts Hermes gives every turn)"""
     from gateway.session_context import get_session_env as fact
     if fact('HERMES_CRON_SESSION', '') == '1':
@@ -715,7 +715,7 @@ def his_private_turn() -> bool:
     author = fact('HERMES_SESSION_USER_ID', '').strip().casefold()
     if not (platform and author) or fact('HERMES_SESSION_CHAT_TYPE', '').strip().casefold() != 'dm':
         return False
-    return f'{platform}:{author}' in his_addresses()
+    return f'{platform}:{author}' in owners_addresses()
 
 
 def stop_on_his_word(user_message='', session_id='', turn_display_kind=None, parent_session_id='', **_):
@@ -730,7 +730,7 @@ def stop_on_his_word(user_message='', session_id='', turn_display_kind=None, par
             return None
         if turn_display_kind is not None:
             return offer_waiting(session_id, user_message, turn_display_kind)
-        if not BARE_STOP.match(str(user_message or '')) or not his_private_turn():
+        if not BARE_STOP.match(str(user_message or '')) or not owners_private_turn():
             return None
         from tools.async_delegation import interrupt_for_session
         stopped = interrupt_for_session(parent_session_id=str(session_id or ''), reason='stop_command_text')

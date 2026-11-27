@@ -399,8 +399,8 @@ def _ok_lines(life: Path) -> list:
     g = _json(life / 'grants.json')
     oks = []
     for v in (g.values() if isinstance(g, dict) else []):
-        if isinstance(v, dict) and (v.get('title') or v.get('his_words')):
-            said = str(v.get('his_words') or v.get('note') or '').strip()
+        if isinstance(v, dict) and (v.get('title') or v.get('owners_words')):
+            said = str(v.get('owners_words') or v.get('note') or '').strip()
             oks.append(f'{str(v.get("title") or "this kind of thing").strip().rstrip(".")} and things like it'
                        + (f' ({O} said "{said[:80]}")' if said else ''))
     lines.append((f'Standing OKs {O} has given (you do these without asking, then tell them): ' + '; '.join(oks) + '.') if oks else

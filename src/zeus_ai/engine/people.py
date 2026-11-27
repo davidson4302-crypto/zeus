@@ -68,7 +68,7 @@ HOW_CLOSE = {5: 'very close', 4: 'close', 3: 'someone they work with or see ofte
              1: 'not part of their world'}
 
 SCHEMA = {'type': 'object', 'required': ['people'], 'properties': {'people': {'type': 'array', 'items': {
-    'type': 'object', 'required': ['row', 'name', 'relation', 'relation_quote', 'closeness', 'closeness_quote', 'his', 'his_quote'],
+    'type': 'object', 'required': ['row', 'name', 'relation', 'relation_quote', 'closeness', 'closeness_quote', 'his', 'owners_quote'],
     'properties': {
         'row': {'type': 'string', 'description': 'the row id of the statement, copied exactly'},
         'name': {'type': 'string', 'description': 'the person, spelled as in the statement\'s people list'},
@@ -77,7 +77,7 @@ SCHEMA = {'type': 'object', 'required': ['people'], 'properties': {'people': {'t
         'closeness': {'type': ['integer', 'null'], 'description': '1 to 5, only if the quote shows it; else null'},
         'closeness_quote': {'type': ['string', 'null']},
         'his': {'enum': ['yes', 'no', 'unknown'], 'description': f'should Zeus bring {OWNER} things about this person?'},
-        'his_quote': {'type': ['string', 'null']},
+        'owners_quote': {'type': ['string', 'null']},
     }}}}}
 
 SYSTEM = """You keep a small page about each person in the owner's life for the owner's assistant Zeus. The owner is
@@ -97,7 +97,7 @@ names. For each statement and each person it names, return one entry saying only
   "ignore for now" about ONE item is not a "no" about the person. That is "unknown".
 
 For each of the three give the shortest exact piece of the quote that supports it (relation_quote, closeness_quote,
-his_quote), copied character for character from `quote`. When a statement names more than one person, the supporting
+owners_quote), copied character for character from `quote`. When a statement names more than one person, the supporting
 piece must name that person and nobody else. No supporting words means null (or "unknown"). Code throws away anything
 whose supporting words are not in the quote, so never stretch. A missed detail is fine; a wrong one is not.""".replace(
     'The owner is\ncalled the owner. ', '').replace('{owner}', OWNER)
@@ -1011,15 +1011,15 @@ def _apply(person: dict, answer: dict, item: dict, report: dict):
 
     his = answer.get('his')
     if his in ('yes', 'no'):
-        why = _backed(answer.get('his_quote'), row, person, item['others'])
+        why = _backed(answer.get('owners_quote'), row, person, item['others'])
         if why is None and his == 'no':
             # "Not for me" hides a person's items from the owner, so it gets the strictest check: the words must name the
             # person and must actually say no. "Disregard that" about one item is not about the person.
-            if not _names_in(answer['his_quote'], person):
+            if not _names_in(answer['owners_quote'], person):
                 why = 'a "not for me" must name the person in the owner\'s own words'
-            elif not SAYS_NO.search(answer['his_quote'].replace('’', "'")):
+            elif not SAYS_NO.search(answer['owners_quote'].replace('’', "'")):
                 why = 'the supporting words do not say no'
-        keep('his', his, answer['his_quote']) if why is None else drop('his', his, why)
+        keep('his', his, answer['owners_quote']) if why is None else drop('his', his, why)
 
 
 def main(argv=None):

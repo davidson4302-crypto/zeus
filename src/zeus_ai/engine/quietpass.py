@@ -237,20 +237,20 @@ def _due(raw):
     return (t if t.tzinfo else t.replace(tzinfo=PACIFIC)).astimezone(PACIFIC).isoformat()
 
 
-def _loose_numbers(text: str, his_text: str, due, said_at: float) -> list:
+def _loose_numbers(text: str, owners_text: str, due, said_at: float) -> list:
     """Numbers in the sentence that the owner never said. A flight number or an address that only Zeus mentioned must
     not ride into a learned fact on the back of a real quote. The date they spoke and the worked-out due date are allowed."""
     said = datetime.fromtimestamp(said_at, PACIFIC)
-    ok = {int(n) for n in re.findall(r'\d+', his_text)} | {said.year, said.month, said.day}
+    ok = {int(n) for n in re.findall(r'\d+', owners_text)} | {said.year, said.month, said.day}
     if due:
         ok |= {int(n) for n in re.findall(r'\d+', str(due)[:10])}
     return [n for n in re.findall(r'\d+', text) if int(n) not in ok]
 
 
-def _he_said(name: str, his_text: str) -> bool:
+def _he_said(name: str, owners_text: str) -> bool:
     """A person counts only if the owner used that name personally (whole word), not if only Zeus did."""
     n = _flat(name)
-    return bool(n) and re.search(r'(?<![a-z0-9])' + re.escape(n) + r'(?![a-z0-9])', his_text) is not None
+    return bool(n) and re.search(r'(?<![a-z0-9])' + re.escape(n) + r'(?![a-z0-9])', owners_text) is not None
 
 
 def _same(a: dict, b: dict) -> bool:
@@ -272,8 +272,8 @@ def check(items: list, conv: list, bookmark: int, known: list, now: float, life=
     cid = C.conv_id(conv)
     his = [{**m, 'text': own_words(m['text'])} for m in conv if m['who'] == 'owner']
     his = [m for m in his if m['text']]
-    his_new = [m for m in his if m['id'] > bookmark]
-    his_all_text = _flat(' '.join(m['text'] for m in his))
+    owners_new = [m for m in his if m['id'] > bookmark]
+    owners_all_text = _flat(' '.join(m['text'] for m in his))
     zeus_text = _flat(' '.join(m['text'] for m in conv if m['who'] == 'zeus'))
     kept, dropped = [], []
 
@@ -289,12 +289,12 @@ def check(items: list, conv: list, bookmark: int, known: list, now: float, life=
         if it.get('kind') not in KINDS or len(text) < 8:
             drop('not a usable item', it)
             continue
-        src = C.quoted_in(quote, his_new, it.get('message_id')) if len(_flat(quote)) >= 6 else None
+        src = C.quoted_in(quote, owners_new, it.get('message_id')) if len(_flat(quote)) >= 6 else None
         if src is None:
             q = _flat(quote)
             if len(q) >= 6 and q in zeus_text:
                 drop("Zeus's words, not the owner's", it)
-            elif len(q) >= 6 and q in his_all_text:
+            elif len(q) >= 6 and q in owners_all_text:
                 drop('from a message already looked at', it)
             else:
                 drop("quote not found in the owner's messages", it)
@@ -304,12 +304,12 @@ def check(items: list, conv: list, bookmark: int, known: list, now: float, life=
             continue
         due = _due(it.get('due'))
         if it['kind'] != 'promise':      # a promise needs Zeus's context to say what "this" is; a fact or a rule does not
-            loose = loose_numbers(text, his_all_text, due, src['at'])
+            loose = loose_numbers(text, owners_all_text, due, src['at'])
             if loose:
                 drop('has a detail the owner did not say (%s)' % ', '.join(loose[:4]), it)
                 continue
         row = {'kind': it['kind'], 'text': text, 'quote': quote[:600], 'message_id': src['id'], 'said_at': src['at'],
-               'people': [p.strip() for p in (it.get('people') or []) if isinstance(p, str) and _he_said(p, his_all_text)][:8],
+               'people': [p.strip() for p in (it.get('people') or []) if isinstance(p, str) and _he_said(p, owners_all_text)][:8],
                'due': due, 'conversation': cid, 'at': now,
                '_durable': it.get('durable') is not False, '_covered_by': it.get('covered_by')}
         if any(_same(row, k) for k in known) or any(same(row, k) for k in kept):
@@ -523,11 +523,11 @@ def run(now=None, life_home=None, complete=None, dry=False, max_conversations=2,
 
     for conv in todo[:max_conversations]:
         cid = C.conv_id(conv)
-        new_his = [own_words(m['text']) for m in conv if m['who'] == 'owner' and m['id'] > bookmark]
+        new_owners = [own_words(m['text']) for m in conv if m['who'] == 'owner' and m['id'] > bookmark]
         entry = {'conversation': cid, 'from': _stamp(conv[0]['at']), 'to': _stamp(conv[-1]['at']),
-                 'his_new_messages': len(new_his), 'kept': [], 'dropped': [], 'effects': []}
+                 'owners_new_messages': len(new_owners), 'kept': [], 'dropped': [], 'effects': []}
         jobs = []
-        if len(' '.join(new_his).split()) < MIN_WORDS:
+        if len(' '.join(new_owners).split()) < MIN_WORDS:
             entry['skipped'] = 'too little said to be worth a look'
             items = []
         else:

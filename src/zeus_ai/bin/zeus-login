@@ -12,11 +12,11 @@
 set -u
 # Hermes profiles remap HOME; name the real login keychain so agents find these items.
 KC="$(dscl . -read "/Users/$(id -un)" NFSHomeDirectory | sed 's/^NFSHomeDirectory: //')/Library/Keychains/login.keychain-db"
-STORES="${ZEUS_STORES_RELOGIN:-walmart amazon samsclub southwest ralphs}"
+STORES="${ZEUS_STORES_RELOGIN:-walmart amazon samsclub southwest}"
 known() { case " $STORES " in *" $1 "*) [ -n "$1" ];; *) return 1;; esac; }
 name() { known "$1" || return 1
   case "$1" in walmart) echo "Walmart";; amazon) echo "Amazon";; samsclub) echo "Sam's Club";;
-  southwest) echo "Southwest";; ralphs) echo "Ralphs";; *) echo "$1";; esac; }
+  southwest) echo "Southwest";; *) echo "$1";; esac; }
 svc() { echo "zeus-login:$1"; }
 
 add() {

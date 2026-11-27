@@ -235,7 +235,7 @@ def open_items(ledger: Path, now=None, limit=10):
         unsure = state == 'surfaced' and isinstance(p.get('told'), dict) and bool(p['told'].get('uncertain')) and (ledger.parent / 'commit-integrity-on').exists()   # commit integrity: never "you told them" for a note that may not have arrived; False without the switch
         item = {'key': key, 'what': p.get('title'), 'state': UNSURE if unsure else WORDS.get(state, state), 'you_found': pk.get('headline'),
                 'you_noticed': None if pk.get('headline') else (str(p.get('why') or '')[:300] or None),
-                'facts': pk.get('details'), 'his_call': (pk.get('decision') or {}).get('ask'),
+                'facts': pk.get('details'), 'owners_call': (pk.get('decision') or {}).get('ask'),
                 'prepared': ((pk.get('decision') or {}).get('ready') or '')[:400] or None,
                 'he_hears_about_it': str(surface_at or '')[:16] if state in ('pending', 'executing', 'ready') else None}
         if state in ('surfaced', 'done') and (p.get('told') or {}).get('at') and not unsure:
@@ -283,8 +283,8 @@ def line_for(n: int, it: dict, now=None) -> str:
         parts.append('You found: ' + str(it['you_found']))
     if it.get('facts'):
         parts.append(str(it['facts']))
-    if it.get('his_call'):
-        parts.append('Their call: ' + str(it['his_call']))
+    if it.get('owners_call'):
+        parts.append('Their call: ' + str(it['owners_call']))
     if it.get('prepared'):
         parts.append('Prepared: ' + str(it['prepared']))
     return ' '.join(parts) + f" [ref {it['key']}]"
@@ -303,7 +303,7 @@ def bottom_line(items: list, shown=None) -> str:
     items = everything open; shown = the part listed below (for the numbers of the things that wait on them)."""
     state = _state
     waiting = sum(1 for it in items if is_waiting(it))
-    new_ask = sum(1 for it in items if state(it).startswith('you finished') and it.get('his_call'))
+    new_ask = sum(1 for it in items if state(it).startswith('you finished') and it.get('owners_call'))
     working = sum(1 for it in items if state(it).startswith('you are working'))
     unheard = sum(1 for it in items if 'not heard about it' in state(it)) - new_ask - working
     failed = sum(1 for it in items if 'failed' in state(it))
@@ -505,7 +505,7 @@ def plain_summary(items: list, stopped: bool, now=None) -> str:
     failed = [it for it in items if 'failed' in str(it.get('state', ''))]
     out = []
     if waiting:
-        bits = [_name(it) + (f" ({str(it['his_call']).rstrip('.?')})" if it.get('his_call') else '') for it in waiting]
+        bits = [_name(it) + (f" ({str(it['owners_call']).rstrip('.?')})" if it.get('owners_call') else '') for it in waiting]
         out.append(('One thing is waiting on your word: ' if len(bits) == 1 else f'{len(bits)} things are waiting on your word: ') + _join(bits) + '.')
     else:
         out.append('Nothing is waiting on you right now.')
@@ -622,7 +622,7 @@ def fix_opening(text: str, items: list):
         rest = rest[0].upper() + rest[1:]
     lead = ''
     if waiting and not SAYS_WAITING.search(rest):
-        bits = [_name(it) + (f" ({str(it['his_call']).rstrip('.?')})" if it.get('his_call') else '') for it in waiting]
+        bits = [_name(it) + (f" ({str(it['owners_call']).rstrip('.?')})" if it.get('owners_call') else '') for it in waiting]
         lead = ('One thing is waiting on your word: ' if len(bits) == 1 else f'{len(bits)} things are waiting on your word: ') + _join(bits) + '.'
     elif failed and not waiting and not SAYS_SNAG.search(rest):
         lead = f"I hit a snag on {_join([_name(it) for it in failed])}."
@@ -712,10 +712,10 @@ def owner_display_text(text):
     return ''.join(out)
 
 
-def clean_reply(text: str, life_home: Path, now=None, asked: str = '', his_thread: bool = True, given: bool = False, reading=None):
+def clean_reply(text: str, life_home: Path, now=None, asked: str = '', owners_thread: bool = True, given: bool = False, reading=None):
     """-> a replacement reply when the text carries machinery or opens against the list, else None (leave it alone).
     asked = the message being answered; when it asked for machinery, shop talk about what is held back is cut too.
-    his_thread = this reply is in a conversation the owner sees. Blatant shop talk is cut there whatever was asked. In any
+    owners_thread = this reply is in a conversation the owner sees. Blatant shop talk is cut there whatever was asked. In any
     other session (a developer's one-shot test) the agent may talk shop.
     given = this turn was handed the list (their own chat), so its opening can be checked against it."""
     life_home = Path(life_home)
@@ -723,7 +723,7 @@ def clean_reply(text: str, life_home: Path, now=None, asked: str = '', his_threa
     if not text or not ledger.is_file():
         return None
     original = text
-    if his_thread and not re.search(r'\b(?:verbatim|exact (?:text|code|url|link)|source code)\b', asked or '', re.I):
+    if owners_thread and not re.search(r'\b(?:verbatim|exact (?:text|code|url|link)|source code)\b', asked or '', re.I):
         text = owner_display_text(text)
     keys = all_keys(ledger)
     keys += [PEOPLE_HEAD] if (life_home / PEOPLE_ON).exists() else []      # its heading is machinery too
@@ -735,14 +735,14 @@ def clean_reply(text: str, life_home: Path, now=None, asked: str = '', his_threa
     if leaks(text, keys):
         return safe_summary(ledger, (life_home / 'off').exists(), keys, now=now)
     out = text if text != original else None
-    if is_probe(asked) or (his_thread and BLATANT.search(text)):
+    if is_probe(asked) or (owners_thread and BLATANT.search(text)):
         rest, cut = drop_shop_talk(text)
         if cut:
             if len(rest) >= 40 and not leaks(rest, keys):
                 out = rest
             else:
                 return safe_summary(ledger, (life_home / 'off').exists(), keys, now=now)
-    if his_thread and (life_home / CHECKS_ON).exists():      # no talk about its own notes or preferences
+    if owners_thread and (life_home / CHECKS_ON).exists():      # no talk about its own notes or preferences
         rest = drop_storage_talk(out or text, asked)
         if rest and not leaks(rest, keys):
             out = rest
@@ -844,7 +844,7 @@ def _style_checks(out, text, life_home, entry, host=None):
             _REPLY_HOOK = mod
         kwargs = {'news': unheard_news(life_home)} if (life_home / CHECKS_ON).exists() else {}
         final = _REPLY_HOOK.after_guard(out, text, life_home, asked=entry[1], host=host,
-                                        guard=lambda t: clean_reply(t, life_home, asked=entry[1], his_thread=True, given=True), **kwargs)
+                                        guard=lambda t: clean_reply(t, life_home, asked=entry[1], owners_thread=True, given=True), **kwargs)
         plan_log(life_home, entry[1], final if isinstance(final, str) and final else (out or text))    # logged only
         return final
     except Exception:
@@ -963,7 +963,7 @@ ORDERS_COMMAND = ('They ask where an order is or whether it came ("where is my W
                   'Never say delivered unless it does. It only reads: nothing is changed, cancelled or reordered. ' % TOOL)
 # One sentence pair for `refund`, only with the engine's switch file refund-watch-on (the engine has no such command without it).
 REFUND_COMMAND = ('They say something is going back to a store, or that they already took or sent it back ("I\'m returning the TV to Walmart", "dropped the Amazon return at UPS"): '
-                  '`%s refund back <walmart|samsclub|amazon|ralphs> "<what it is>" --said "<their exact words>"`, adding `--order <number>` or `--by <the day it must be back>` '
+                  '`%s refund back <walmart|samsclub|amazon> "<what it is>" --said "<their exact words>"`, adding `--order <number>` or `--by <the day it must be back>` '
                   'only when they gave them and `--dropped` only when they said it already went back. It only writes down what they said: it never starts, cancels or changes a return, '
                   'so never tell them a return was started. They ask about a refund or a return ("did Amazon refund me?"): `%s refund` prints what the stores have said. Say a refund '
                   'was issued only when it prints that the store said so, say it as the store\'s word, and never say the money arrived or landed: their card and balances cannot be seen. ' % (TOOL, TOOL))
@@ -1303,8 +1303,8 @@ def keep_the_warm_line(text: str, items: list):
     ask) a thing that waits on them. -> the cut reply, or None (it opens with work, or nothing was tacked on)."""
     names = set()
     for it in items:
-        if is_waiting(it) or it.get('his_call'):
-            for field in ('what', 'his_call'):
+        if is_waiting(it) or it.get('owners_call'):
+            for field in ('what', 'owners_call'):
                 names |= {w.lower() for w in re.findall(r"\b[A-Z][a-z]{2,}\b", str(it.get(field) or ''))}
     names -= NOT_A_NAME
 
@@ -1581,7 +1581,7 @@ def keep_the_greeting(text: str, items: list, asked: str = '', now=None):
     said_words = {w.lower() for w in re.findall(r"[A-Za-z]{3,}", str(asked or ''))}
     names = set()
     for it in items:
-        for field in ('what', 'his_call'):
+        for field in ('what', 'owners_call'):
             names |= {w.lower() for w in re.findall(r"\b[A-Z][a-z]{2,}\b", str(it.get(field) or ''))}
         for field in ('you_found', 'you_noticed', 'facts'):
             names |= {w.lower() for w in re.findall(r"(?<=[a-z0-9,;:)] )[A-Z][a-z]{2,}\b", str(it.get(field) or ''))}
@@ -2612,8 +2612,8 @@ def scope_cut(P, reply, keys, items, message, soon_test):
                 in_scope = any(P._talks_about(sentence, P.names_of(it), P.title_words(it)) for it in planned)
                 quoted = bool(re.search(r'["“”]', sentence))
                 if about and not in_scope and not quoted:
-                    needs_him = any(P.role(by_key[k]) in ('ask', 'snag', 'coming') for k in about)
-                    if first or (needs_him and soon_test(sentence)):
+                    needs_owner = any(P.role(by_key[k]) in ('ask', 'snag', 'coming') for k in about)
+                    if first or (needs_owner and soon_test(sentence)):
                         return None
                     cut, trailing = cut + 1, True
                     continue
@@ -2889,9 +2889,9 @@ def register(ctx):
             entry = asked_by_session.get(str(kwargs.get('turn_id') or session_id))
             # Their thread = a turn that was given the private reference (their own chat), or any turn in the one shared
             # conversation (a question steered into their live turn lands there too).
-            his_thread = bool(entry) or is_bot_chat(home, session_id)
+            owners_thread = bool(entry) or is_bot_chat(home, session_id)
             held = reading_by_session.get(str(kwargs.get('turn_id') or session_id)) if entry else None
-            out = clean_reply(str(response_text or ''), life_home, asked=entry[1] if entry else '', his_thread=his_thread, given=bool(entry),
+            out = clean_reply(str(response_text or ''), life_home, asked=entry[1] if entry else '', owners_thread=owners_thread, given=bool(entry),
                               reading=held[1] if held else None)
             if held:        # switch file turnctx-on; else `out`
                 out = scope_guard(out, str(response_text or ''), life_home, held[1], asked=entry[1], since=entry[0])
@@ -2902,7 +2902,7 @@ def register(ctx):
                                             kwargs.get('turn_id') or session_id, life_home)   # a helper's result at night
             if held:
                 return held
-            if final is None and his_thread and value(platform) in {'cli', 'local'}:
+            if final is None and owners_thread and value(platform) in {'cli', 'local'}:
                 return local_itinerary_reply(str(response_text or ''))
             return final
         except Exception:

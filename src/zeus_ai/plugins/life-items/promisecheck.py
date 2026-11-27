@@ -268,7 +268,7 @@ def _goals(life) -> list:
             if not con.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='goals'").fetchone():
                 return []
             return [{'words': words(f'{title} {said}'), 'touched': float(created or 0)}
-                    for title, said, created in con.execute("SELECT title,his_words,created FROM goals WHERE status IN ('active','paused')").fetchall()]
+                    for title, said, created in con.execute("SELECT title,owners_words,created FROM goals WHERE status IN ('active','paused')").fetchall()]
     except (sqlite3.Error, OSError):
         return []
 

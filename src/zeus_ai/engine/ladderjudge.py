@@ -43,12 +43,12 @@ OWNER = settings.OWNER_FIRST
 TIMEOUT = 120
 SHOW_KNOWN = 120           # facts shown to the judge (newest first, faded ones included); every live rule is shown too
 HELD_KEEP = 50             # held corrections kept in ladder.json for a person to look at
-KINDS = ('fact', 'rule', 'his_promise', 'errand_for_zeus', 'maybe', 'inside_question', 'not_his_words')
+KINDS = ('fact', 'rule', 'owners_promise', 'errand_for_zeus', 'maybe', 'inside_question', 'not_his_words')
 RELATIONS = ('same_as', 'new_value_of', 'different', 'none')
 HOW = ('passing', 'remember', 'rule', 'correction')
 CONFIRMING = ('remember', 'rule', 'correction')
-AS_KIND = {'fact': 'fact', 'rule': 'correction', 'his_promise': 'promise'}
-FROM_KIND = {'fact': 'fact', 'correction': 'rule', 'promise': 'his_promise'}
+AS_KIND = {'fact': 'fact', 'rule': 'correction', 'owners_promise': 'promise'}
+FROM_KIND = {'fact': 'fact', 'correction': 'rule', 'promise': 'owners_promise'}
 NOT_KEPT = {'errand_for_zeus': 'an errand the owner gave Zeus in the chat, not something to keep',
             'maybe': 'only a maybe, not a fact',
             'inside_question': 'inside a question from the owner, not something they told Zeus',
@@ -74,7 +74,7 @@ Return one verdict for every proposal (the field names below say "his": they mea
   fact: something true about {owner}, their people, places or preferences, or where one of their matters stands.
   rule: how Zeus should act from now on, said to Zeus as an instruction ("never book me before 10", "if the alarm
     goes off, call Jordan"). A state of theirs ("I'm off caffeine for a while") is a fact, even if Zeus could act on it.
-  his_promise: something {owner} will do themselves on a day, or asked to be reminded of or to have watched later.
+  owners_promise: something {owner} will do themselves on a day, or asked to be reminded of or to have watched later.
   errand_for_zeus: something {owner} asked Zeus to do or pass on right then in the chat ("tell the painter ...",
     "send it").
   maybe: {owner} is not sure or only thinking about it ("might", "probably", "if she retires I'd ...", "idk",
@@ -153,7 +153,7 @@ def _short(text) -> str:
     return t
 
 
-def his_part(msg: str) -> str:
+def owners_part(msg: str) -> str:
     """The owner's own lines of a message: a forwarded or pasted block ("> ..." lines, or everything after a "Forwarded
     message" or "From: ... Sent:" header) is not theirs, even though it sits in a message from them."""
     out = []
@@ -183,7 +183,7 @@ def known_for_judge(life, known: list, now: float) -> tuple:
         last = max(float(h.get('said_at') or 0) for h in LD._heard(f, notes))
         faded = bool(f['let_go'])
         index[str(f['id'])] = ('fact', f, faded)
-        shown.append({'id': str(f['id']), 'kind': 'fact', 'text': f.get('text'), 'his_words': str(f.get('quote') or '')[:160],
+        shown.append({'id': str(f['id']), 'kind': 'fact', 'text': f.get('text'), 'owners_words': str(f.get('quote') or '')[:160],
                       'days_ago': int((now - last) // 86400) if last else None, 'known': f['standing']}
                      | ({'faded': True} if faded else {}) | ({'holds_until': f['expires']} if f.get('expires') else {}))
     prefs = Q._read_json(Path(life) / 'preferences.json', {})
@@ -193,7 +193,7 @@ def known_for_judge(life, known: list, now: float) -> tuple:
             ago = int((now - datetime.fromisoformat(str(r.get('at'))).timestamp()) // 86400)
         except (TypeError, ValueError):
             ago = None
-        shown.append({'id': r['id'], 'kind': 'rule', 'text': r.get('text'), 'his_words': str(r.get('quote') or '')[:160],
+        shown.append({'id': r['id'], 'kind': 'rule', 'text': r.get('text'), 'owners_words': str(r.get('quote') or '')[:160],
                       'days_ago': ago, 'known': r['standing']} | ({'holds_until': r['expires']} if r.get('expires') else {}))
     return shown, index
 
@@ -209,20 +209,20 @@ def build_prompt(conv: list, bookmark: int, now: float, proposals: list, shown: 
         else:
             lines.append({'who': 'Zeus (context only)', 'said': Q._said(m['at']), 'text': m['text'][:400]})
     props = [{'id': p['pid'], 'kind': FROM_KIND.get(p['row']['kind'], p['row']['kind']), 'text': p['row']['text'],
-              'his_words': p['row']['quote'][:400], 'line': p['row']['message_id']} for p in proposals]
+              'owners_words': p['row']['quote'][:400], 'line': p['row']['message_id']} for p in proposals]
     return json.dumps({'today': Q._said(now), 'conversation': lines, 'proposals': props, 'known': shown}, ensure_ascii=False, indent=1)
 
 
 # ---- the proposals -------------------------------------------------------------------------------------------------
 
-def _row_like_check(Q, C, it: dict, his_new: list, his_all_text: str, cid, now: float):
+def _row_like_check(Q, C, it: dict, owners_new: list, owners_all_text: str, cid, now: float):
     """The row quietpass.check would have built for a model item it dropped after the quote check passed."""
-    src = C.quoted_in(str(it.get('quote') or '').strip(), his_new, it.get('message_id'))
+    src = C.quoted_in(str(it.get('quote') or '').strip(), owners_new, it.get('message_id'))
     if src is None:
         return None
     quote = str(it.get('quote') or '').strip()
     return {'kind': it['kind'], 'text': Q._plain(it.get('text')), 'quote': quote[:600], 'message_id': src['id'], 'said_at': src['at'],
-            'people': [p.strip() for p in (it.get('people') or []) if isinstance(p, str) and Q._he_said(p, his_all_text)][:8],
+            'people': [p.strip() for p in (it.get('people') or []) if isinstance(p, str) and Q._he_said(p, owners_all_text)][:8],
             'due': Q._due(it.get('due')), 'conversation': cid, 'at': now,
             '_durable': it.get('durable') is not False, '_covered_by': it.get('covered_by')}
 
@@ -238,8 +238,8 @@ def proposals_of(entry: dict, items: list, conv: list, bookmark: int, now: float
     Q, _, _, C = _mods()
     his = [{**m, 'text': Q.own_words(m['text'])} for m in conv if m['who'] == 'owner']
     his = [m for m in his if m['text']]
-    his_new = [m for m in his if m['id'] > bookmark]
-    his_all_text = Q._flat(' '.join(m['text'] for m in his))
+    owners_new = [m for m in his if m['id'] > bookmark]
+    owners_all_text = Q._flat(' '.join(m['text'] for m in his))
     cid = C.conv_id(conv)
     out = []
     LD = _mods()[1]
@@ -249,7 +249,7 @@ def proposals_of(entry: dict, items: list, conv: list, bookmark: int, now: float
         if not str(d.get('why') or '').startswith(REBUILD):
             continue
         it = _item_of(Q, d, items)
-        row = _row_like_check(Q, C, it, his_new, his_all_text, cid, now) if it.get('kind') in Q.KINDS else None
+        row = _row_like_check(Q, C, it, owners_new, owners_all_text, cid, now) if it.get('kind') in Q.KINDS else None
         if row is not None:
             out.append({'row': row, 'dropped': d, 'item': it})
     for i, p in enumerate(out, 1):
@@ -311,14 +311,14 @@ def counted(E, start, plus, from_words, ok_days: set):
     return d + timedelta(days=plus), None
 
 
-def loose_numbers(LD, Q, text: str, his_all_text: str, said_at, days: set) -> list:
+def loose_numbers(LD, Q, text: str, owners_all_text: str, said_at, days: set) -> list:
     """Numbers in a sentence that are not the owner's: not typed by them (5k is 5,000), not the day they spoke, and not
     the day, month or year of a day they named or the model's checked dates ("tuesday" -> 11)."""
-    first = Q._loose_numbers(text, his_all_text, None, said_at)
+    first = Q._loose_numbers(text, owners_all_text, None, said_at)
     if not first:
         return []
     said = datetime.fromtimestamp(float(said_at), Q.PACIFIC)
-    ok = {v for _, v in LD._amounts(his_all_text)} | {float(n) for n in re.findall(r'\d+', his_all_text)} | \
+    ok = {v for _, v in LD._amounts(owners_all_text)} | {float(n) for n in re.findall(r'\d+', owners_all_text)} | \
         {float(said.year), float(said.month), float(said.day)}
     for d in days:
         ok |= {float(d.year), float(d.month), float(d.day)}
@@ -375,7 +375,7 @@ def _apply(life, entry, items, conv, bookmark, known, now, dry, props, verdicts,
     his = [m for m in his if m['text']]
     text_of = {m['id']: m['text'] for m in his}
     session_of = {m['id']: m.get('session') for m in conv}
-    his_all_text = Q._flat(' '.join(m['text'] for m in his))
+    owners_all_text = Q._flat(' '.join(m['text'] for m in his))
     ok_days = named(E, his)
     cid = C.conv_id(conv)
     stamp = Q._stamp(now)
@@ -414,7 +414,7 @@ def _apply(life, entry, items, conv, bookmark, known, now, dry, props, verdicts,
         try:
             if row['kind'] == 'fact':
                 cross('maybe', bool(LD.HEDGED.search(row['quote']) and not LD.RULE_WORDS.search(row['quote']) or LD.hedged(row)), kind == 'maybe', row)
-                cross('plan with a day', bool(LD._as_promise(row, said, now)), kind == 'his_promise', row)
+                cross('plan with a day', bool(LD._as_promise(row, said, now)), kind == 'owners_promise', row)
             if row['kind'] in ('fact', 'promise'):
                 cross('inside a question', LD.in_question(row['quote'], said), kind == 'inside_question', row)
             if row['kind'] == 'correction':
@@ -422,7 +422,7 @@ def _apply(life, entry, items, conv, bookmark, known, now, dry, props, verdicts,
         except Exception as e:
             disagree.append({'for': row.get('text'), 'check': 'word rules', 'error': f'{type(e).__name__}: {str(e)[:80]}'})
         # -- safety: the owner's own words, not a forwarded block ------------------------------------------------------------
-        if Q._flat(row['quote']) not in Q._flat(his_part(said)):
+        if Q._flat(row['quote']) not in Q._flat(owners_part(said)):
             note_drop(row, "forwarded or pasted text, not the owner's words")
             continue
         if kind in NOT_KEPT:
@@ -436,7 +436,7 @@ def _apply(life, entry, items, conv, bookmark, known, now, dry, props, verdicts,
             row['kind'] = new_kind
             words = Q._plain(v.get('reworded')) if v.get('reworded') else ''
             if words and len(words) >= 8 and (LD._content(words) & (LD._content(old_text) | LD._content(row['quote']))) \
-                    and not loose_numbers(LD, Q, words, his_all_text, row['said_at'], ok_days):
+                    and not loose_numbers(LD, Q, words, owners_all_text, row['said_at'], ok_days):
                 row['text'], text_changed = words, True
             elif new_kind == 'promise':
                 row['text'] = PLAN_LEAD.sub('Remind %s to ' % OWNER, old_text, count=1)
@@ -483,7 +483,7 @@ def _apply(life, entry, items, conv, bookmark, known, now, dry, props, verdicts,
         # -- numbers in what is kept must be the owner's (a check, never a meaning). Only where the sentence is new to this step:
         # one check() dropped for a number, or one reworded here; what check() kept already passed. ----------------------
         recheck = text_changed or str((src_drop or {}).get('why') or '').startswith(DETAIL)
-        loose = loose_numbers(LD, Q, row['text'], his_all_text, row['said_at'], ok_days | checked_days) if recheck and row['kind'] != 'promise' else []
+        loose = loose_numbers(LD, Q, row['text'], owners_all_text, row['said_at'], ok_days | checked_days) if recheck and row['kind'] != 'promise' else []
         if loose:
             if row['kind'] == 'correction' or v['relation'] == 'new_value_of':
                 hold(row, 'has a detail the owner did not say (%s)' % ', '.join(loose[:4]), v.get('known_id') if v['relation'] == 'new_value_of' else None)

@@ -228,7 +228,7 @@ class HermesLine:
         return [settings.HERMES_BIN, '--profile', settings.PROFILE, 'send', '--to', platform + ':' + target, '--json', '--file', '-']
 
     def _closed(self, now):
-        """Quiet hours on the home clock. ownertime.his_clock_line moves this check to the owner's clock."""
+        """Quiet hours on the home clock. ownertime.owners_clock_line moves this check to the owner's clock."""
         return not __import__('ownertime')._daytime_hour(datetime.fromtimestamp(now, ZoneInfo(settings.OWNER_TZ)).hour)
 
     # ---- send ---------------------------------------------------------------------------------------------------
@@ -357,7 +357,7 @@ class HermesLine:
 def _line(state_dir):
     """The texting line every engine send uses, with its quiet-hours check on the owner's clock."""
     OT = __import__('ownertime')
-    return OT.his_clock_line(HermesLine)(state_dir)
+    return OT.owners_clock_line(HermesLine)(state_dir)
 
 
 def _default_recheck(row, opp):
