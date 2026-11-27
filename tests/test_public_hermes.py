@@ -31,6 +31,23 @@ HOME.mkdir()
 hermes = pytest.importorskip('hermes_cli.plugins', reason='Hermes Agent is not importable here')
 pytest.importorskip('gateway.session_context', reason='Hermes Agent is not importable here')
 
+
+def _pinned_hermes() -> bool:
+    """These tests target the Hermes version Zeus pins (hermes_patches/series.json). Skip on any other checkout."""
+    import inspect
+    import subprocess
+    from gateway import session_context as _sc
+    base = json.loads((Path(__file__).resolve().parents[1] / 'src/zeus_ai/hermes_patches/series.json').read_text())['base_commit']
+    root = Path(hermes.__file__).resolve().parents[1]
+    head = subprocess.run(['git', '-C', str(root), 'rev-parse', 'HEAD'], capture_output=True, text=True).stdout.strip()
+    if head:
+        return head == base
+    return 'turn_event' in inspect.signature(_sc.set_session_vars).parameters
+
+
+if not _pinned_hermes():
+    pytest.skip('installed Hermes is not the version Zeus pins', allow_module_level=True)
+
 from gateway.platforms.event import MessageEvent  # noqa: E402
 from gateway.session_context import clear_session_vars, set_session_vars  # noqa: E402
 from agent.subagent_lifecycle import bind_subagent_parent  # noqa: E402
