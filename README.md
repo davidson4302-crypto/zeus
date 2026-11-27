@@ -1,5 +1,11 @@
 # Zeus
 
+> **Early preview (0.1).** Every part is tested on its own, and CI runs on macOS, but Zeus has not yet been
+> installed end to end on a clean Mac or tried with a real Photon line and a real store checkout. Expect rough
+> edges in `zeus setup`. If something breaks, please [open an issue](https://github.com/davidson4302-crypto/zeus/issues)
+> with the output of `zeus doctor`. The safety checks refuse when unsure, so a bug should look like Zeus saying no,
+> not Zeus doing something you didn't approve.
+
 A proactive personal assistant you text over iMessage. Zeus watches your email, trips, orders, returns,
 renewals and reminders, tells you what matters before you ask, and does the legwork. It is careful by
 design: it never buys anything without your yes, keeps quiet hours, never redoes a send that may already
@@ -10,7 +16,7 @@ Zeus is a plugin pack and engine for [Hermes Agent](https://github.com/NousResea
 ## Install
 
 ```bash
-pipx install zeus-ai          # or, before the PyPI release: pipx install git+https://github.com/davidson4302-crypto/zeus
+pipx install git+https://github.com/davidson4302-crypto/zeus   # not on PyPI yet
 zeus setup
 zeus doctor
 ```
