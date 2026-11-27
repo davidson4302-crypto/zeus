@@ -1,27 +1,27 @@
 """buyfence: Zeus's purchase lock, inside the browser child.
 
-What it does. Zeus drives its own Chrome through browser_exec. With action receipts on, every click, key, raw script
-and raw CDP call goes through ActionReceipts.run_action (Hermes tools/browser_use_actions.py). install() wraps that
-one choke point. Before any input reaches the page, code (never the model) decides:
+What it does. Zeus drives its own Chrome through browser_exec (public Hermes: Python run by the browser-harness CLI).
+Every helper there (click_at_xy, js, cdp, press_key, type_text, fill_input ...) talks to the browser through one pipe,
+browser_harness.helpers._send. arm() (called by the prelude the gateway puts in front of Zeus's code) puts a Fence in
+front of that pipe. Before a request that could press something reaches the page, code (never the model) decides:
 
   * Is this a purchase step? A click on a Place order / Buy now / Pay now style button (on one of the owner's stores, or on
-    any checkout page), or on a checkout page: the Enter key, raw CDP input, a script that clicks or submits.
+    any checkout page), or on a checkout page: the Enter key, raw CDP input, a script that clicks or submits, a click
+    on something that cannot be read.
+  * Is it the owner's own chat turn? A cron job, a delegated helper or anyone else never gets to press.
   * If it is, is there a grant? A grant is the owner's real yes to THIS store and a total, recorded by `zeus-buy yes`
     (their own message, read by code). No grant: refused, nothing is sent to the page.
   * With a grant: the order total is read off the page. Unreadable, or above their yes, or a different store: refused.
-  * Pass: the grant is marked `ordering` on disk (fsync) BEFORE input, the click is dispatched exactly once, and the
-    grant becomes `placed_unconfirmed`. Any later purchase step at that store is refused `already_ordered` and told to
-    read the store's orders page, never to click again.
+  * Pass: the grant is marked `ordering` on disk (fsync) BEFORE input, the click (mousePressed + mouseReleased) is
+    sent once, and the grant becomes `placed_unconfirmed`. Any later purchase step at that store is refused
+    `already_ordered` and told to read the store's orders page, never to click again.
   * Raw input (keys, scripts, raw CDP) can never place an order, even with a grant: it cannot be tied to one button and
     one press. Only click_element / click_at_xy on the button itself can.
 
+A refused request is never sent: the step stops with the plain-words reason (printed and raised).
 Every decision on a purchase step or a checkout page is appended to buy-log.jsonl in the life folder.
 Switch files in the life folder: buy-lock-off (do nothing), buy-lock-shadow (log, refuse nothing). None = enforce.
-If anything here errors, purchase steps are refused (fail closed for money) and everything else goes ahead.
-
-A second, deeper belt: browser_harness.helpers._send (the one pipe all harness CDP traffic uses in this child) is
-wrapped too, so code that skips the receipts layer (`from browser_harness import helpers; helpers.click_at_xy(...)`)
-still cannot send raw input to a store or checkout page.
+If anything here errors, the request that could press is refused (fail closed for money).
 
 Booking stores: a booking yes binds the booking, not just store + total. A store with a "booking" block
 in stores.json is a booking store. Its grant must carry the trip (dates, flight numbers, airports,
@@ -45,7 +45,7 @@ import time
 from pathlib import Path
 from urllib.parse import urlsplit
 
-VERSION = 'purchase-lock-2.2'
+VERSION = 'purchase-lock-3.0'
 HERE = Path(__file__).resolve().parent
 ENGINE_DIR = HERE.parents[1] / 'engine'          # zeus_ai/engine, where settings.py lives
 
@@ -553,10 +553,18 @@ def message(st: Stores, reason: str, *, store=None, total=None, grant=None, host
         return (f'Not run. On the {name} purchase page, scripts may only read the page. This script changes what the page '
                 f'shows (it uses "{token}"), and the purchase lock checks the trip by reading the page, so it did not run. '
                 'Type into boxes with fill_input, press buttons with click_element, and read the page with a plain script.')
-    if reason == 'raw_browser_input':
-        return ('Not done. A store or checkout page is open, and this step sends raw input to the browser outside the purchase '
-                'lock. On these pages press buttons with click_element(...) only; Place order also needs the owner\'s yes first '
-                '(zeus-buy yes). Do not try another way.')
+    if reason == 'not_owner_turn':
+        return ("Not placed. Only the owner's own chat turn can press Place order, Pay or Buy now; a background job, a "
+                'helper or anyone else never can. Nothing was pressed. Tell the owner in one line that the order is ready '
+                'and waits for their yes in your chat.')
+    if reason == 'target_unknown':
+        return ('Not done. On this checkout page the purchase lock could not tell what this click would hit, so it did not '
+                'send it. Press buttons with click_element("<selector>") so the lock can read the button. If this is Place '
+                "order, it also needs the owner's yes first (zeus-buy yes); ask them in one line.")
+    if reason == 'page_unreadable':
+        return ('Not done. The purchase lock could not read the page to check this step (it may still be loading), so '
+                'it did not send it. Wait for the page to load and try once more. If it keeps happening on a store page, '
+                'tell the owner in one line and ask before going on.')
     if reason == 'lock_error':
         return (f'Not placed. The purchase lock hit a problem ({why or "unknown"}), so it blocks Place order and Pay buttons '
                 'until it is fixed. Everything else in the browser still works. Tell the owner in one line that the purchase lock '
@@ -719,17 +727,88 @@ def risky_cdp(method: str, params: dict) -> str:
     return ''
 
 
-# ---- the fence --------------------------------------------------------------------------------------------------------
+
+
+# fill_input()'s own last step: it tells the page the box changed. Input and change events never press a button.
+FILL_EVENTS = re.compile(r"""\(\(\)=>\{const e=document\.querySelector\("(?:[^"\\]|\\.)*"\);if\(!e\)return;"""
+                         r"""e\.dispatchEvent\(new Event\('input',\{bubbles:true\}\)\);"""
+                         r"""e\.dispatchEvent\(new Event\('change',\{bubbles:true\}\)\);\}\)\(\);""")
+
+
+def request_risk(method: str, params: dict) -> str:
+    """risky_cdp() for one browser request, plus the ways a request can run page code that risky_cdp does not look at:
+    a javascript: address, DOM writes (an inserted onerror= handler runs code) and the debugger."""
+    m = str(method or '')
+    p = params if isinstance(params, dict) else {}
+    if m in ('Runtime.evaluate', 'Runtime.callFunctionOn') and FILL_EVENTS.fullmatch(str(p.get('expression') or '').strip()):
+        return ''
+    if m == 'Page.navigate' and str(p.get('url') or '').strip().lower().startswith('javascript:'):
+        return 'press'
+    if m.startswith('Debugger.') or (DOM_WRITE_CDP.search(m) and m != 'DOM.setFileInputFiles'):
+        return 'hidden'
+    return risky_cdp(m, p)
+
+
+# ---- code that could reach the browser around the fence -----------------------------------------------------------------
+# browser_exec code is Python. The fence sits in front of the harness's one pipe; these are the ways around it.
+# Checked by the gateway on Zeus's code and by the browser child on agent_helpers.py. Strings are never looked at
+# (JavaScript inside js("...") is the fence's job), only Python names, attributes and imports.
+
+AROUND_MODULES = {'browser_harness', 'importlib', 'inspect', 'gc', 'ctypes', 'socket', 'ssl', 'websocket', 'websockets',
+                  'subprocess', 'multiprocessing', 'asyncio', 'aiohttp', 'pty', 'runpy', 'code', 'codeop', 'pickle',
+                  'marshal', 'types', 'builtins', 'playwright', 'pyppeteer', 'pychrome', 'selenium', 'browser_use'}
+AROUND_NAMES = {'getattr', 'setattr', 'delattr', 'vars', 'globals', 'locals', 'eval', 'exec', 'compile', '__import__',
+                'breakpoint', 'ipc'}
+AROUND_ATTRS = {'modules', 'system', 'popen', 'execv', 'execve', 'execl', 'execlp', 'execvp', 'spawnv', 'spawnl',
+                'posix_spawn', 'fork', 'helpers', 'ipc'}
+
+
+def reaches_around(code: str) -> str:
+    """'' when the code only uses the browser through its helpers; else the name that could skip the fence."""
+    import ast
+    try:
+        tree = ast.parse(code or '')
+    except (SyntaxError, ValueError):
+        return ''                       # it cannot run at all (the whole step is compiled first)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for a in node.names:
+                if a.name.split('.')[0] in AROUND_MODULES:
+                    return 'import ' + a.name
+        elif isinstance(node, ast.ImportFrom):
+            if node.level or (node.module or '').split('.')[0] in AROUND_MODULES:
+                return 'from ' + ('.' * node.level) + (node.module or '') + ' import'
+        elif isinstance(node, ast.Name):
+            if node.id in AROUND_NAMES or node.id.startswith('_plk') or node.id == '_send':
+                return node.id
+        elif isinstance(node, ast.Attribute):
+            if node.attr.startswith('_') or node.attr in AROUND_ATTRS:
+                return '.' + node.attr
+    return ''
+
+
+# ---- the fence (in the browser child, in front of browser_harness.helpers._send) -------------------------------------
+
+def _xy(params: dict) -> tuple:
+    return (params.get('x'), params.get('y'))
+
 
 class Fence:
-    def __init__(self, settings: dict | None = None):
+    """Every request a browser_exec step sends to the browser passes here first (browser_harness.helpers._send is the
+    one pipe click_at_xy, js, cdp, press_key, fill_input and the rest use). A request that cannot press anything goes
+    straight through. One that could is judged against the page it would land on, read by this fence first."""
+
+    def __init__(self, settings: dict | None, send):
         self.settings = dict(settings or {})
         self.life = life_home(self.settings)
         self.grants = Grants(self.life)
+        self.may_press = self.settings.get('may_press') is True      # only the owner's own chat turn
+        self.send = send                                             # the harness's own pipe
         self._stores = None
-        self._local = threading.local()
+        self.held = None            # a purchase press let through, until its mouseReleased has been sent
+        self.harmless_xy = None     # the last harmless mousePressed point: its mouseReleased needs no second look
+        self._exit_hook = False
 
-    # small helpers
     @property
     def st(self) -> Stores:
         if self._stores is None:
@@ -738,27 +817,6 @@ class Fence:
 
     def mode(self) -> str:
         return mode(self.life)
-
-    @contextlib.contextmanager
-    def permit(self):
-        self._local.depth = getattr(self._local, 'depth', 0) + 1
-        try:
-            yield
-        finally:
-            self._local.depth -= 1
-
-    def permitted(self) -> bool:
-        return getattr(self._local, 'depth', 0) > 0
-
-    @staticmethod
-    @contextlib.contextmanager
-    def ctx(ar, value: dict):
-        prev = getattr(ar, '_plk_ctx', None)
-        ar._plk_ctx = value
-        try:
-            yield
-        finally:
-            ar._plk_ctx = prev
 
     def log(self, row: dict):
         write_log(self.life, row)
@@ -769,177 +827,25 @@ class Fence:
         except Exception:
             pass
 
-    # reading
-    def probe(self, ar, xy=None) -> dict:
-        info = ar.raw['page_info']()
-        if isinstance(info, dict) and info.get('dialog'):
-            d = info['dialog'] if isinstance(info['dialog'], dict) else {}
-            return {'href': (getattr(ar, 'last_state', {}) or {}).get('url', ''), 'text': '', 'buttons': [], 'hit': None,
-                    'focus': None, 'dialog': {'type': str(d.get('type') or 'dialog'), 'message': str(d.get('message') or '')[:300]}}
-        raw = ar.raw['js'](probe_script(xy))
-        return json.loads(raw) if isinstance(raw, str) else dict(raw or {})
+    # reading (the fence's own reads go straight to the pipe)
+    def tab(self) -> dict:
+        try:
+            return dict(self.send({'meta': 'current_tab'}) or {})
+        except Exception:
+            return {}
 
-    def other_tabs_hot(self, cdp) -> bool:
-        """Is any page tab on one of the stores or on a checkout URL? (used when a raw step names another tab)"""
-        res = cdp('Target.getTargets') or {}
-        for t in res.get('targetInfos') or []:
-            if t.get('type') == 'page':
-                url = str(t.get('url') or '')
-                if self.st.for_host(urlsplit(url).hostname or '') or self.st.any_commit_url(url):
-                    return True
-        return False
-
-    # judging
-    def classify(self, ar, action: str, ctx: dict, target) -> tuple:
-        """-> (kind, facts, extra). kind: None (not a purchase step), 'click', 'frame', 'raw', 'hidden', or
-        ('target', reason) when the click target itself cannot be resolved."""
-        kind_ctx = ctx.get('kind') or action
-        if action == 'click':
-            resolved = target() if target else None
-            if resolved is None:
-                xy = ctx.get('xy')
-            elif resolved.get('refused'):
-                return ('target', resolved['refused']), None, {'resolved': resolved}
-            else:
-                xy = [resolved.get('x'), resolved.get('y')]
-            p = self.probe(ar, xy)
-            facts = page_facts(self.st, p)
-            if facts['dialog']:
-                return ('raw' if (facts['store'] or facts['url_commit']) else None), facts, {}
-            kind = click_kind(self.st, facts, p.get('hit'))
-            return kind, facts, {'hit': p.get('hit')}
-        if action in ('press_key', 'dispatch_key', 'type_text', 'raw_script', 'raw_cdp'):
-            p = self.probe(ar)
-            facts = page_facts(self.st, p)
-            hot = facts['hot'] or (facts['dialog'] and (facts['store'] or facts['url_commit']))
-            if action in ('press_key', 'dispatch_key'):
-                key = ctx.get('key') if kind_ctx == action else None       # unknown key: judged as Enter (fail closed)
-                press = key_is_press(key if key is not None else 'Enter', p.get('focus'))
-                return ('raw' if press and hot else None), facts, {}
-            if action == 'type_text':
-                txt = ctx.get('text')
-                return ('raw' if hot and (txt is None or re.search(r'[\r\n]', str(txt))) else None), facts, {}
-            if action == 'raw_script':
-                expr = ctx.get('expression')
-                if expr is None:
-                    return ('raw' if hot else None), facts, {}
-                if RAW_PRESS.search(str(expr)):
-                    risk = 'press'
-                elif RAW_HIDDEN.search(str(expr)):
-                    risk = 'hidden'
-                else:
-                    risk = ''
-                if risk and ctx.get('target_id') and not hot:
-                    hot = self.other_tabs_hot(ar.raw['cdp'])
-                token = (RAW_PRESS.search(str(expr)) or RAW_HIDDEN.search(str(expr)))
-                if not risk and (self.booking_page(facts) or facts['store'] in RESERVATION_STORES and facts['commit_page']):
-                    write = RAW_WRITE.search(str(expr))
-                    if write:
-                        return 'rewrite', facts, {'token': write.group(0).strip()}
-                return ({'press': 'raw', 'hidden': 'hidden'}.get(risk) if hot else None), facts, {'token': token.group(0) if token else ''}
-            # raw_cdp
-            method = ctx.get('method')
-            if method is None:
-                return ('raw' if hot else None), facts, {}
-            risk = risky_cdp(method, ctx.get('params') or {})
-            if not risk and (self.booking_page(facts) or facts['store'] in RESERVATION_STORES and facts['commit_page']):
-                src = str((ctx.get('params') or {}).get('expression') or (ctx.get('params') or {}).get('functionDeclaration') or '')
-                write = DOM_WRITE_CDP.search(str(method)) or RAW_WRITE.search(src)
-                if write:
-                    return 'rewrite', facts, {'token': write.group(0).strip()}
-            if risk and ctx.get('session_id') and not hot:
-                hot = self.other_tabs_hot(ar.raw['cdp'])
-            if risk == 'hidden':
-                src = str((ctx.get('params') or {}).get('expression') or (ctx.get('params') or {}).get('functionDeclaration') or '')
-                token = RAW_HIDDEN.search(src)
-                return ('hidden' if hot else None), facts, {'token': token.group(0) if token else method}
-            return ('raw' if risk and hot else None), facts, {}
-        return None, None, {}
-
-    def judge(self, ar, action: str, ctx: dict, target) -> dict:
-        kind, facts, extra = self.classify(ar, action, ctx, target)
-        base = {'action': action}
-        if isinstance(kind, tuple):                     # the click target itself: same answer the receipts layer gives
-            return {**base, 'verdict': 'refuse', 'reason': kind[1], 'lock': False, 'resolved': extra.get('resolved') or {}}
-        if facts is None:
-            return {**base, 'verdict': 'allow', 'reason': 'not_a_purchase_step', 'log': False}
-        base.update(store=facts['store'], page=facts['page'], page_total_cents=facts['total'], commit_page=facts['commit_page'])
-        hit = (extra.get('hit') or {}) if isinstance(extra, dict) else {}
-        if hit:
-            c = hit.get('clickable') or hit.get('self') or {}
-            base['button'] = (c.get('labels') or [''])[0][:60]
-        if facts['store'] in RESERVATION_STORES and kind is not None:
-            rejected = {**base, 'verdict':'refuse','reason':'reservation_approval','log':True,'lock':True,
-                        'message':'Reservation held. Open the exact review page and verify the current owner approval.'}
-            if kind != 'click' or action != 'click' or int(ctx.get('clicks',1)) != 1 or ctx.get('button','left') != 'left' or self.mode()!='enforce':
-                return rejected
-            try:
-                tab = ar.raw['current_tab']()['targetId']
-                resolved = target() if target else None
-                if not resolved or resolved.get('refused'):
-                    return rejected
-                p = self.probe(ar,[resolved['x'],resolved['y']])
-                path = self.life.parent.parent/'state'/'reservations'
-                key = reservation_adapter().gate(path,tab,p,False)
-                return {**base,'verdict':'reservation','reservation_key':key,'reason':'reservation_matched','log':True}
-            except Exception:
-                return rejected
-        if kind is None:
-            return {**base, 'verdict': 'allow', 'reason': 'not_a_purchase_step', 'log': bool(facts['commit_page'])}
-        base['kind'] = kind
-        if kind == 'hidden':
-            return self.refuse(base, 'checkout_script_not_read_only', token=extra.get('token', ''))
-        if kind == 'rewrite':
-            return self.refuse(base, 'booking_script_changes_page', reason_code='checkout_script_not_read_only',
-                               token=extra.get('token', ''))
-        sid = facts['store']
-        if sid is None:
-            return self.refuse(base, 'store_not_on_list', host=facts['host'])
-        now = time.time()
-        data = self.grants.current(now)
-        rows = data['grants']
-        unsettled = latest(rows, sid, UNSETTLED)
-        if unsettled:
-            return self.refuse(base, 'already_ordered', grant=unsettled)
-        mine = latest([g for g in rows if float(g.get('expires_at') or 0) > now], sid, ('approved',))
-        if mine is None:
-            other = latest([g for g in rows if float(g.get('expires_at') or 0) > now], None, ('approved',))
-            if other is not None:
-                return self.refuse(base, 'store_mismatch', grant=other)
-            recent = latest([g for g in rows if now - float(g.get('pressed_at') or 0) < RECENT_PLACED], sid, ('placed', 'placed_unconfirmed'))
-            return self.refuse(base, 'raw_needs_his_yes' if kind == 'raw' else 'purchase_needs_his_yes', recent=recent,
-                               reason_code='purchase_needs_his_yes', booking_page=self.trip_for_text(sid, facts))
-        base['grant'] = mine['id']
-        base['grant_total_cents'] = int(mine['total_cents'])
-        if kind == 'raw':
-            return self.refuse(base, 'place_order_by_click_only', grant=mine)
-        if action == 'click' and (int(ctx.get('clicks', 1) or 1) != 1 or str(ctx.get('button', 'left')) != 'left'):
-            return self.refuse(base, 'one_click_only', grant=mine)
-        total = facts['total']
-        if total is None:
-            return self.refuse(base, 'total_unreadable', grant=mine)
-        if total > int(mine['total_cents']):
-            return self.refuse(base, 'total_above_his_yes', grant=mine, booking_page=self.trip_for_text(sid, facts))
-        if kind == 'frame':
-            return {**base, 'verdict': 'allow', 'reason': 'frame_click_with_his_yes', 'log': True}
-        if self.st.is_booking(sid):
-            # A booking yes binds the trip. Errors here propagate: judge_when_broken refuses the press.
-            cfg, B = self.st.booking(sid), booking_module()
-            page = B.read_page(cfg, facts.get('text') or '', facts.get('fields') or [], B.today())
-            base['booking_page'] = B.summary(page)
-            want = mine.get('booking')
-            if not want:
-                return self.refuse(base, 'booking_needs_details', grant=mine, booking_page=page)
-            base['booking_want'] = {k: v for k, v in want.items() if not str(k).startswith('_')}
-            res = B.compare(cfg, want, page)
-            if res['unreadable']:
-                return self.refuse(base, 'booking_details_unreadable', grant=mine, booking_page=page)
-            if res['diffs']:
-                base['differs'] = res['fields']
-                base['diffs'] = res['diffs']
-                return self.refuse(base, 'booking_details_differ', grant=mine, booking_page=page, diffs=res['diffs'])
-            base['booking_matches'] = True
-        return {**base, 'verdict': 'pass', 'reason': 'owners_yes_matches', 'grant_row': mine, 'log': True}
+    def read(self, session_id=None, xy=None) -> dict:
+        dialog = self.send({'meta': 'pending_dialog'}).get('dialog')
+        if dialog:
+            d = dialog if isinstance(dialog, dict) else {}
+            return {'href': self.tab().get('url', ''), 'text': '', 'buttons': [], 'hit': None, 'focus': None,
+                    'dialog': {'type': str(d.get('type') or 'dialog'), 'message': str(d.get('message') or '')[:300]}}
+        r = self.send({'method': 'Runtime.evaluate', 'params': {'expression': probe_script(xy), 'returnByValue': True},
+                       'session_id': session_id})
+        value = ((r.get('result') or {}).get('result') or {}).get('value')
+        if not isinstance(value, str):
+            raise ValueError('the page did not answer the read')
+        return json.loads(value)
 
     def booking_page(self, facts) -> bool:
         """A booking store's checkout page (where the trip reader decides)."""
@@ -956,198 +862,231 @@ class Fence:
         except Exception:
             return None
 
-    def refuse(self, base: dict, which: str, reason_code: str | None = None, **kw) -> dict:
-        sid = base.get('store')
-        text = message(self.st, which, store=sid, total=base.get('page_total_cents'), **kw)
-        return {**base, 'verdict': 'refuse', 'reason': reason_code or which, 'message': text, 'lock': True, 'log': True}
+    # judging
+    def kind_of(self, method: str, params: dict, page: dict, facts: dict, session_id=None):
+        """None (not a purchase step), 'click', 'frame', 'raw', 'hidden', 'rewrite' or 'unknown_target'."""
+        hot = facts['hot'] or bool(facts['dialog'] and (facts['store'] or facts['url_commit']
+                                                         or DIALOG_WORDS.search(str(facts['dialog'].get('message')))))
+        if method == 'Input.dispatchMouseEvent':
+            if facts['dialog']:
+                return 'raw' if hot else None
+            hit = page.get('hit')
+            kind = click_kind(self.st, facts, hit)
+            if kind is None and facts['commit_page'] and not (hit and (hit.get('clickable') or hit.get('self'))):
+                return 'unknown_target'             # nothing readable under the pointer on a checkout page
+            return kind
+        risk = request_risk(method, params)
+        if risk == 'press' and method == 'Input.dispatchKeyEvent':
+            key = params.get('key') or params.get('code') or params.get('text') or 'Enter'
+            if not key_is_press(key, page.get('focus')) and params.get('windowsVirtualKeyCode') != 13:
+                risk = ''                           # a space typed into a text box
+        if not risk and method in ('Runtime.evaluate', 'Runtime.callFunctionOn') and (
+                self.booking_page(facts) or (facts['store'] in RESERVATION_STORES and facts['commit_page'])):
+            write = RAW_WRITE.search(str(params.get('expression') or params.get('functionDeclaration') or ''))
+            if write:
+                return 'rewrite'
+        if risk and not hot and session_id:
+            hot = self.other_tabs_hot()         # a step aimed at another tab or a frame: any store tab counts
+        if not hot or not risk:
+            return None
+        return 'hidden' if risk == 'hidden' else 'raw'
 
-    def judge_when_broken(self, ar, action: str, ctx: dict, target, error: BaseException) -> dict:
-        """The fence itself failed (bad store table, unreadable grants, a bug). Purchase steps are refused; anything
-        that is plainly not one goes ahead. Plain patterns only, nothing loaded from files."""
-        why = f'{type(error).__name__}: {str(error)[:120]}'
-        base = {'action': action, 'error': why}
-        refuse = {**base, 'verdict': 'refuse', 'reason': 'lock_error', 'lock': True, 'log': True,
-                  'message': message(self.st if self._stores else _NoStores(), 'lock_error', why=type(error).__name__)}
-        if action not in ('click', 'press_key', 'dispatch_key', 'type_text', 'raw_script', 'raw_cdp'):
-            return {**base, 'verdict': 'allow', 'reason': 'not_a_purchase_step', 'log': True}
+    def other_tabs_hot(self) -> bool:
+        res = self.send({'method': 'Target.getTargets', 'params': {}, 'session_id': None}).get('result') or {}
+        for t in res.get('targetInfos') or []:
+            url = str(t.get('url') or '')
+            if t.get('type') == 'page' and (self.st.for_host(urlsplit(url).hostname or '') or self.st.any_commit_url(url)):
+                return True
+        return False
+
+    def judge(self, method: str, params: dict, session_id) -> dict:
+        mouse = method == 'Input.dispatchMouseEvent'
+        base = {'action': f"{method}:{params.get('type')}" if mouse or method == 'Input.dispatchKeyEvent' else method}
         try:
-            xy = ctx.get('xy')
-            if action == 'click' and target is not None:
-                r = target()
-                if r.get('refused'):
-                    return {**base, 'verdict': 'refuse', 'reason': r['refused'], 'lock': False, 'resolved': r}
-                xy = [r.get('x'), r.get('y')]
-            p = self.probe(ar, xy if action == 'click' else None)
-            href = str(p.get('href') or '')
-            buttons = p.get('buttons') or []
-            if (urlsplit(href).hostname or '').lower() in ('opentable.com','www.opentable.com') or ((urlsplit(href).hostname or '').lower() in ('trip.com','www.trip.com') and '/hotel' in urlsplit(href).path.lower()):
-                return refuse
-            strongish = re.compile(r'place\s*(?:your\s*)?order|buy\s*(?:it\s*)?now|pay\s*now|complete\s*(?:your\s*)?(?:purchase|booking)|submit\s*order|'
-                                   r'confirm\s*(?:and|&)\s*(?:pay|book)|book\s*(?:it\s*|this\s*)?(?:now|trip|flights?)|^\s*(?:purchase|pay|buy|book)\s*$', re.I)
-            # Each label is tested on its own: a one-word "Purchase" button whose labels come as ["Purchase", "Purchase"]
-            # would never match ^purchase$ if they were joined first.
-            checkout = bool(re.search(r'/checkout|/purchase|/payment|/gp/buy/|/buy/', urlsplit(href).path or '', re.I)) or \
-                any(strongish.search(str(x)) for b in buttons for x in (b.get('labels') or []))
-            if action == 'click':
-                hit = p.get('hit') or {}
-                labels = list((hit.get('clickable') or {}).get('labels') or []) + list((hit.get('self') or {}).get('labels') or [])
-                return refuse if (any(strongish.search(str(x)) for x in labels) or (hit.get('frame') and checkout)) else {**base, 'verdict': 'allow', 'reason': 'not_a_purchase_step', 'log': True}
-            if not checkout:
-                return {**base, 'verdict': 'allow', 'reason': 'not_a_purchase_step', 'log': True}
-            if action in ('press_key', 'dispatch_key'):
-                return refuse if key_is_press(ctx.get('key', 'Enter'), p.get('focus')) else {**base, 'verdict': 'allow', 'reason': 'not_a_purchase_step', 'log': True}
-            if action == 'raw_script':
-                expr = str(ctx.get('expression') or 'click')
-                return refuse if (RAW_PRESS.search(expr) or RAW_HIDDEN.search(expr)) else {**base, 'verdict': 'allow', 'reason': 'not_a_purchase_step', 'log': True}
-            if action == 'raw_cdp':
-                return refuse if risky_cdp(ctx.get('method') or 'Input.dispatchMouseEvent', ctx.get('params') or {}) else {**base, 'verdict': 'allow', 'reason': 'not_a_purchase_step', 'log': True}
-            return refuse
+            page = self.read(session_id, list(_xy(params)) if mouse else None)
+        except Exception as error:
+            return self.refuse({**base, 'error': type(error).__name__}, 'page_unreadable')
+        facts = page_facts(self.st, page)
+        kind = self.kind_of(method, params, page, facts, session_id)
+        base.update(store=facts['store'], page=facts['page'], page_total_cents=facts['total'], commit_page=facts['commit_page'])
+        hit = page.get('hit') or {}
+        if hit:
+            c = hit.get('clickable') or hit.get('self') or {}
+            base['button'] = (c.get('labels') or [''])[0][:60]
+        if kind is None:
+            return {**base, 'verdict': 'allow', 'reason': 'not_a_purchase_step', 'log': bool(facts['commit_page'])}
+        base['kind'] = kind
+        expr = str(params.get('expression') or params.get('functionDeclaration') or '')
+        if kind == 'hidden':
+            token = RAW_HIDDEN.search(expr) or DOM_WRITE_CDP.search(method)
+            return self.refuse(base, 'checkout_script_not_read_only', token=token.group(0) if token else method)
+        if kind == 'rewrite':
+            token = RAW_WRITE.search(expr)
+            return self.refuse(base, 'booking_script_changes_page', reason_code='checkout_script_not_read_only',
+                               token=token.group(0).strip() if token else '')
+        if kind == 'unknown_target':
+            return self.refuse(base, 'target_unknown')
+        if not self.may_press:
+            return self.refuse(base, 'not_owner_turn')
+        one_left_click = (mouse and int(params.get('clickCount', 1) or 1) == 1 and str(params.get('button', 'left')) == 'left')
+        sid = facts['store']
+        if sid in RESERVATION_STORES:
+            return self.judge_reservation(base, kind, one_left_click, page)
+        if sid is None:
+            return self.refuse(base, 'store_not_on_list', host=facts['host'])
+        now = time.time()
+        rows = self.grants.current(now)['grants']
+        unsettled = latest(rows, sid, UNSETTLED)
+        if unsettled:
+            return self.refuse(base, 'already_ordered', grant=unsettled)
+        live = [g for g in rows if float(g.get('expires_at') or 0) > now]
+        mine = latest(live, sid, ('approved',))
+        if mine is None:
+            other = latest(live, None, ('approved',))
+            if other is not None:
+                return self.refuse(base, 'store_mismatch', grant=other)
+            recent = latest([g for g in rows if now - float(g.get('pressed_at') or 0) < RECENT_PLACED], sid, ('placed', 'placed_unconfirmed'))
+            return self.refuse(base, 'raw_needs_his_yes' if kind == 'raw' else 'purchase_needs_his_yes', recent=recent,
+                               reason_code='purchase_needs_his_yes', booking_page=self.trip_for_text(sid, facts))
+        base['grant'] = mine['id']
+        base['grant_total_cents'] = int(mine['total_cents'])
+        if kind == 'raw':
+            return self.refuse(base, 'place_order_by_click_only', grant=mine)
+        if not one_left_click:
+            return self.refuse(base, 'one_click_only', grant=mine)
+        total = facts['total']
+        if total is None:
+            return self.refuse(base, 'total_unreadable', grant=mine)
+        if total > int(mine['total_cents']):
+            return self.refuse(base, 'total_above_his_yes', grant=mine, booking_page=self.trip_for_text(sid, facts))
+        if kind == 'frame':                     # a box from another site (card details): typing there spends nothing
+            return {**base, 'verdict': 'allow', 'reason': 'frame_click_with_his_yes', 'log': True}
+        if self.st.is_booking(sid):
+            # A booking yes binds the trip. Errors here propagate: the caller refuses the press.
+            cfg, B = self.st.booking(sid), booking_module()
+            trip = B.read_page(cfg, facts.get('text') or '', facts.get('fields') or [], B.today())
+            base['booking_page'] = B.summary(trip)
+            want = mine.get('booking')
+            if not want:
+                return self.refuse(base, 'booking_needs_details', grant=mine, booking_page=trip)
+            base['booking_want'] = {k: v for k, v in want.items() if not str(k).startswith('_')}
+            res = B.compare(cfg, want, trip)
+            if res['unreadable']:
+                return self.refuse(base, 'booking_details_unreadable', grant=mine, booking_page=trip)
+            if res['diffs']:
+                base['differs'] = res['fields']
+                base['diffs'] = res['diffs']
+                return self.refuse(base, 'booking_details_differ', grant=mine, booking_page=trip, diffs=res['diffs'])
+            base['booking_matches'] = True
+        return {**base, 'verdict': 'press', 'reason': 'owners_yes_matches', 'grant_row': mine, 'log': True}
+
+    def judge_reservation(self, base: dict, kind, one_left_click: bool, page: dict) -> dict:
+        """Trip.com hotels and OpenTable: the approval lives in reservation_adapter's own store, claimed here."""
+        held = {**base, 'verdict': 'refuse', 'reason': 'reservation_approval', 'log': True,
+                'message': 'Reservation held. Open the exact review page and verify the current owner approval.'}
+        if kind != 'click' or not one_left_click or self.mode() != 'enforce':
+            return held
+        try:
+            path = self.life.parent.parent / 'state' / 'reservations'
+            adapter = reservation_adapter()
+            sandbox = None if path.resolve() == (adapter.PROFILE / 'state' / 'reservations').resolve() else path.parent.parent
+            key = adapter.gate(path, self.tab()['targetId'], page, True, sandbox)
         except Exception:
-            # Cannot even read the page: a raw press could still land (raw CDP does not need the page). Refuse the
-            # kinds of step that can press something; the receipts layer would fail a click on an unreadable page anyway.
-            if action == 'raw_script' and not (RAW_PRESS.search(str(ctx.get('expression') or 'click')) or RAW_HIDDEN.search(str(ctx.get('expression') or ''))):
-                return {**base, 'verdict': 'allow', 'reason': 'not_a_purchase_step', 'log': True}
-            if action == 'raw_cdp' and not risky_cdp(ctx.get('method') or 'Input.dispatchMouseEvent', ctx.get('params') or {}):
-                return {**base, 'verdict': 'allow', 'reason': 'not_a_purchase_step', 'log': True}
-            if action in ('press_key', 'dispatch_key') and not key_is_press(ctx.get('key', 'Enter'), None):
-                return {**base, 'verdict': 'allow', 'reason': 'not_a_purchase_step', 'log': True}
-            return refuse
+            return held
+        return {**base, 'verdict': 'press', 'reason': 'reservation_matched', 'reservation_key': key, 'log': True}
+
+    def refuse(self, base: dict, which: str, reason_code: str | None = None, **kw) -> dict:
+        text = message(self.st, which, store=base.get('store'), total=base.get('page_total_cents'), **kw)
+        return {**base, 'verdict': 'refuse', 'reason': reason_code or which, 'message': text, 'log': True}
+
+    def broken(self, method: str, error: BaseException) -> dict:
+        """The fence itself failed (bad store table, unreadable grants, a bug): this request could press, so it is refused."""
+        why = f'{type(error).__name__}: {str(error)[:120]}'
+        return {'action': method, 'error': why, 'verdict': 'refuse', 'reason': 'lock_error', 'log': True,
+                'message': message(self.st if self._stores else _NoStores(), 'lock_error', why=type(error).__name__)}
 
     # acting
-    def refused_record(self, ar, action: str, d: dict):
-        before = ar.observe()
-        record = ar.begin(action, before)
-        record.update({k: v for k, v in (d.get('resolved') or {}).items() if k in ('target', 'blocker')})
-        if d.get('lock'):
-            record['purchase_lock'] = {k: d.get(k) for k in ('reason', 'store', 'page', 'page_total_cents', 'grant', 'grant_total_cents', 'kind')}
-            if d.get('differs'):
-                record['purchase_lock']['differs'] = d.get('differs')
-            record['message'] = d.get('message')
-            self.say(d.get('message') or '')
-        return ar.complete(record, before, before, 'refused', d['reason'])
-
-    def run_action(self, ar, orig, action, effect, check=None, target=None, raw=False):
+    def __call__(self, req, *args, **kwargs):
+        go = lambda: self.send(req, *args, **kwargs)
+        if not isinstance(req, dict) or not req.get('method'):
+            return go()                                  # daemon housekeeping (tabs, sessions, dialogs, events)
+        method = str(req['method'])
+        params = req.get('params') if isinstance(req.get('params'), dict) else {}
+        mouse = method == 'Input.dispatchMouseEvent' and params.get('type') in ('mousePressed', 'mouseReleased')
+        expr = str(params.get('expression') or params.get('functionDeclaration') or '')
+        if not mouse and not request_risk(method, params) and not RAW_WRITE.search(expr):
+            return go()
         m = self.mode()
-        call = lambda: orig(ar, action, effect, check=check, target=target, raw=raw)
-        ctx = getattr(ar, '_plk_ctx', None) or {}
-        with self.permit():
-            if m == 'off':
-                return call()
-            try:
-                d = self.judge(ar, action, ctx, target)
-            except Exception as error:
-                d = self.judge_when_broken(ar, action, ctx, target, error)
-            row = {k: v for k, v in d.items() if k not in ('grant_row', 'log', 'lock', 'resolved')}
-            row['mode'] = m
-            if d['verdict'] == 'allow':
-                if d.get('log'):
-                    self.log(row)
-                return call()
-            if d['verdict'] == 'refuse':
-                if not d.get('lock'):                       # target missing/covered: the receipts layer's own refusal
-                    return self.refused_record(ar, action, d)
-                if m == 'shadow':
-                    self.log({**row, 'verdict': 'would_refuse'})
-                    return call()
-                self.log(row)
-                return self.refused_record(ar, action, d)
-            if d['verdict']=='reservation':
-                return reservation_adapter().locked_click(self,ar,call,action,d)
-            return self.place_once(ar, call, action, d, row)
-
-    def place_once(self, ar, call, action, d, row):
-        g = d['grant_row']
-        claimed = self.grants.claim(g['id'], page_total_cents=d.get('page_total_cents'), page=d.get('page'))
-        if claimed is None:                              # another step took this yes a moment ago
-            latest_row = latest(self.grants.load()['grants'], d.get('store'))
-            dd = self.refuse({k: d[k] for k in ('action', 'store', 'page', 'page_total_cents', 'commit_page', 'kind') if k in d},
-                             'already_ordered', grant=latest_row or g)
-            self.log({**{k: v for k, v in dd.items() if k not in ('log', 'lock')}, 'mode': row.get('mode')})
-            return self.refused_record(ar, action, dd)
-        fired = [0]
-        real = ar.dispatch_click
-
-        def once(*a, **k):
-            if fired[0]:
-                raise RuntimeError('purchase lock: Place order is pressed once only')
-            fired[0] += 1
-            return real(*a, **k)
-
-        ar.dispatch_click = once
-        result = None
+        if m == 'off':
+            return go()
+        if mouse and params.get('type') == 'mouseReleased':
+            if self.held and self.held['xy'] == _xy(params):
+                return self.release(go)
+            if self.harmless_xy == _xy(params):
+                self.harmless_xy = None
+                return go()
         try:
-            result = call()
-            return result
-        finally:
-            try:
-                del ar.dispatch_click
-            except AttributeError:
-                pass
-            if fired[0]:
-                self.grants.finish(g['id'], 'placed_unconfirmed', 'Place order was pressed once; the store has not been read yet')
-                self.log({**row, 'verdict': 'pass', 'pressed': 1})
-                text = pass_message(self.st, d['store'], int(d['page_total_cents']), g)
-                self.say(text)
-                if isinstance(result, dict):
-                    result['purchase_lock'] = {'reason': 'owners_yes_matches', 'store': d['store'], 'grant': g['id'],
-                                               'page_total_cents': d['page_total_cents'], 'pressed': 1}
-                    result['message'] = text
-                    try:
-                        ar.save()                       # the receipt file on disk carries the note too
-                    except Exception:
-                        pass
-            else:
-                self.grants.finish(g['id'], 'approved', 'no input was sent (the click did not go ahead), the yes still holds')
-                self.log({**row, 'verdict': 'released', 'pressed': 0})
-
-    # the deeper belt: the harness IPC pipe in this child
-    def guard_ipc(self):
-        h = sys.modules.get('browser_harness.helpers')
-        if h is None or getattr(getattr(h, '_send', None), '_purchase_lock', False):
-            return False
-        orig_send = h._send
-        fence = self
-
-        def _send(req, *args, **kwargs):
-            if fence.permitted() or not isinstance(req, dict) or not req.get('method'):
-                return orig_send(req, *args, **kwargs)
-            risk = risky_cdp(req.get('method'), req.get('params') or {})
-            if not risk:
-                return orig_send(req, *args, **kwargs)
-            m = fence.mode()
-            if m == 'off':
-                return orig_send(req, *args, **kwargs)
-            with fence.permit():
-                try:
-                    hot, facts = fence.hot_for_ipc(orig_send, req.get('session_id'))
-                except Exception as error:
-                    hot, facts = True, {'error': type(error).__name__}
-            if not hot:
-                return orig_send(req, *args, **kwargs)
-            row = {'action': 'raw_ipc', 'method': req.get('method'), 'verdict': 'refuse', 'reason': 'raw_browser_input',
-                   'store': facts.get('store'), 'page': facts.get('page'), 'mode': m}
+            d = self.judge(method, params, req.get('session_id'))
+        except Exception as error:
+            d = self.broken(method, error)
+        row = {k: v for k, v in d.items() if k not in ('grant_row', 'log', 'message')}
+        row['mode'] = m
+        if d['verdict'] == 'allow':
+            if mouse and params.get('type') == 'mousePressed':
+                self.harmless_xy = _xy(params)
+            if d.get('log'):
+                self.log(row)
+            return go()
+        if d['verdict'] == 'refuse':
             if m == 'shadow':
-                fence.log({**row, 'verdict': 'would_refuse'})
-                return orig_send(req, *args, **kwargs)
-            fence.log(row)
-            text = message(fence.st, 'raw_browser_input')
-            fence.say(text)
-            raise RuntimeError(text)
+                self.log({**row, 'verdict': 'would_refuse'})
+                return go()
+            self.log(row)
+            self.say(d['message'])
+            raise RuntimeError('[purchase lock] ' + d['message'])
+        return self.press(go, params, d, row)
 
-        _send._purchase_lock = True
-        _send.__wrapped__ = orig_send
-        h._send = _send
-        return True
+    def press(self, go, params: dict, d: dict, row: dict):
+        """The one press the owner's yes covers: claimed on disk (fsync) before any input, then sent once."""
+        if d.get('reservation_key'):
+            self.held = {'xy': _xy(params), 'reservation': d['reservation_key'], 'row': row}
+        else:
+            g = d['grant_row']
+            if self.grants.claim(g['id'], page_total_cents=d.get('page_total_cents'), page=d.get('page')) is None:
+                again = self.refuse({k: d[k] for k in ('action', 'store', 'page', 'page_total_cents', 'commit_page', 'kind') if k in d},
+                                    'already_ordered', grant=latest(self.grants.load()['grants'], d.get('store')) or g)
+                self.log({**{k: v for k, v in again.items() if k not in ('log', 'message')}, 'mode': row.get('mode')})
+                self.say(again['message'])
+                raise RuntimeError('[purchase lock] ' + again['message'])
+            self.held = {'xy': _xy(params), 'grant': g, 'd': d, 'row': row}
+        if not self._exit_hook:                          # a press whose release never comes is still a press
+            import atexit
+            atexit.register(self.settle)
+            self._exit_hook = True
+        result = go()
+        if params.get('type') == 'mouseReleased':
+            self.settle()
+        return result
 
-    def hot_for_ipc(self, send, session_id) -> tuple:
-        dialog = send({'meta': 'pending_dialog'}).get('dialog')
-        if dialog:
-            return True, {'dialog': True}
-        r = send({'method': 'Runtime.evaluate', 'params': {'expression': probe_script(None), 'returnByValue': True},
-                  'session_id': session_id})
-        value = ((r.get('result') or {}).get('result') or {}).get('value')
-        facts = page_facts(self.st, json.loads(value) if isinstance(value, str) else {})
-        return facts['hot'], facts
+    def release(self, go):
+        try:
+            return go()
+        finally:
+            self.settle()
+
+    def settle(self):
+        """After the press: the yes is spent (placed_unconfirmed) and Zeus is told to read the store, never press again."""
+        held, self.held = self.held, None
+        if not held:
+            return
+        if held.get('reservation'):
+            self.log({**held['row'], 'verdict': 'pass', 'pressed': 1})
+            self.say('The reservation button was pressed once. Read the provider confirmation page before anything else.')
+            return
+        g, d = held['grant'], held['d']
+        self.grants.finish(g['id'], 'placed_unconfirmed', 'Place order was pressed once; the store has not been read yet')
+        self.log({**held['row'], 'verdict': 'pass', 'pressed': 1})
+        self.say(pass_message(self.st, d['store'], int(d['page_total_cents']), g))
 
 
 class _NoStores:
@@ -1161,73 +1100,42 @@ class _NoStores:
         return ''
 
 
-# ---- install into ActionReceipts --------------------------------------------------------------------------------------
+# ---- arming the fence in a browser_exec step --------------------------------------------------------------------------
 
-def install(ActionReceipts, settings: dict | None = None) -> Fence:
-    """Wrap ActionReceipts so every input action is judged first. All wrappers are built before any is assigned, so a
-    failure here leaves the class untouched (the caller then installs the stand-alone fail-safe)."""
-    existing = getattr(ActionReceipts, '_purchase_lock', None)
-    if existing is not None:
-        return existing
-    fence = Fence(settings)
-    fence.st                                            # load the store table now: a broken table fails here, loudly
-    orig = {n: getattr(ActionReceipts, n) for n in ('run_action', 'click_element', 'click_at_xy', 'js', 'cdp', 'install')}
+CLICK_ELEMENT_JS = ("(()=>{const e=document.querySelector(%s);if(!e)return null;e.scrollIntoView({block:'center'});"
+                    "const b=e.getBoundingClientRect();return [b.left+b.width/2,b.top+b.height/2]})()")
 
-    def run_action(self, action, effect, *, check=None, target=None, raw=False):
-        return fence.run_action(self, orig['run_action'], action, effect, check=check, target=target, raw=raw)
 
-    def click_element(self, selector):
-        with fence.ctx(self, {'kind': 'click', 'selector': selector}):
-            return orig['click_element'](self, selector)
+def arm(namespace: dict, settings: dict | None = None) -> Fence:
+    """Called by the prelude the gateway puts in front of Zeus's browser_exec code. Puts the Fence in front of the
+    harness pipe and adds click_element(selector). Raises when it cannot (the prelude then stops the step)."""
+    helpers = sys.modules['browser_harness.helpers']
+    workspace_helpers = Path(getattr(helpers, 'AGENT_WORKSPACE', '') or '.') / 'agent_helpers.py'
+    if workspace_helpers.is_file():
+        around = reaches_around(workspace_helpers.read_text(encoding='utf-8', errors='replace'))
+        if around:
+            raise PermissionError(f'agent_helpers.py in the browser workspace uses "{around}", which could skip the '
+                                  'purchase lock. Take that out of agent_helpers.py.')
+    send = helpers._send
+    if isinstance(send, Fence):
+        return send
+    fence = Fence(settings, send)
+    fence.st                                            # load the store table now: a broken table stops the step here
+    helpers._send = fence
 
-    def click_at_xy(self, x, y, button='left', clicks=1):
-        with fence.ctx(self, {'kind': 'click', 'xy': [x, y], 'button': button, 'clicks': clicks}):
-            return orig['click_at_xy'](self, x, y, button, clicks)
+    def click_element(selector):
+        """Click the middle of the element `selector` (one left click, through the purchase lock)."""
+        xy = namespace['js'](CLICK_ELEMENT_JS % json.dumps(selector))
+        if not xy:
+            raise RuntimeError(f'click_element: no element for {selector!r}')
+        namespace['click_at_xy'](xy[0], xy[1])
 
-    def js(self, expression, *args, **kwargs):
-        tid = kwargs.get('target_id', args[0] if args else None)
-        with fence.ctx(self, {'kind': 'raw_script', 'expression': expression, 'target_id': tid}):
-            return orig['js'](self, expression, *args, **kwargs)
-
-    def cdp(self, method, *args, **kwargs):
-        sid = kwargs.get('session_id', args[0] if args else None)
-        params = {k: v for k, v in kwargs.items() if k not in ('session_id', '_response_timeout')}
-        with fence.ctx(self, {'kind': 'raw_cdp', 'method': method, 'params': params, 'session_id': sid}):
-            return orig['cdp'](self, method, *args, **kwargs)
-
-    def make_ctx(name, args, kwargs):
-        if name == 'press_key':
-            return {'kind': name, 'key': kwargs.get('key', args[0] if args else None)}
-        if name == 'dispatch_key':
-            return {'kind': name, 'key': kwargs.get('key', args[1] if len(args) > 1 else 'Enter')}
-        return {'kind': name, 'text': kwargs.get('text', args[0] if args else None)}
-
-    def install_(self, namespace):
-        orig['install'](self, namespace)
-        for name in ('press_key', 'dispatch_key', 'type_text'):
-            if name in namespace:
-                inner = namespace[name]
-
-                def wrapped(*a, _inner=inner, _name=name, **k):
-                    with fence.ctx(self, make_ctx(_name, a, k)):
-                        return _inner(*a, **k)
-                namespace[name] = wrapped
-
-    ActionReceipts.run_action = run_action
-    ActionReceipts.click_element = click_element
-    ActionReceipts.click_at_xy = click_at_xy
-    ActionReceipts.js = js
-    ActionReceipts.cdp = cdp
-    ActionReceipts.install = install_
-    ActionReceipts._purchase_lock = fence
-    try:
-        fence.guard_ipc()
-    except Exception as error:                          # the deeper belt is extra; the main fence is in place
-        write_log(fence.life, {'action': 'install', 'verdict': 'note', 'reason': 'ipc_guard_not_installed', 'error': repr(error)[:200]})
+    namespace.setdefault('click_element', click_element)
     try:                                                # heartbeat: proof the lock armed itself in a real browser step
         beat = Path(fence.life) / 'buy-lock-heartbeat.json'
         tmp = beat.with_name('.buy-lock-heartbeat.json.tmp')
-        tmp.write_text(json.dumps({'armed_at': time.time(), 'pid': os.getpid(), 'version': VERSION}))
+        tmp.write_text(json.dumps({'armed_at': time.time(), 'pid': os.getpid(), 'version': VERSION,
+                                   'may_press': fence.may_press}))
         os.replace(tmp, beat)
     except Exception:
         pass

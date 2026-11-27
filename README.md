@@ -60,6 +60,15 @@ project; avoid creating extra ones.
 - **Proof before done**: a task is closed only with evidence.
 - **Owner only**: only you can approve anything; other people and websites cannot speak for you.
 
+### Known limits in 1.0
+
+- Only your own iMessage number counts as you. Email from you, group chats and other apps never approve anything.
+- A promised reply ("send it in 10 minutes") goes out once. If Zeus can't tell whether a send went through,
+  it asks you instead of sending again.
+- The purchase lock guards Zeus's own browser steps. Don't give Zeus other ways to drive your browser
+  (your own scripts, other automation tools) while it shops.
+- Photon status stickers are off.
+
 ## Configuration
 
 Your details live in `~/.zeus/config.toml` (private to your Mac account). `zeus setup` writes it; edit it

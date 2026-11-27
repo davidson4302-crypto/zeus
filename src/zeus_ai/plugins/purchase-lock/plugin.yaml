@@ -1,5 +1,5 @@
 name: purchase-lock
-version: 2.2.0
-description: "Zeus may place an order in its own Chrome only after the owner's real yes to that store and that total, once. A code check in the browser child (buyfence) refuses Place order, Pay or Buy now without a matching yes, reads the page total, presses at most once, and sends unclear outcomes to the store's orders page instead of a second click. A booking store (flights) also has its trip details checked against the yes: dates, flights, airports, passengers, and times and fare when given."
+version: 3.0.0
+description: "Zeus may place an order in its own Chrome only after the owner's real yes to that store and that total, once. A code check in the browser child (buyfence, armed by a pre_tool_call prelude on every browser_exec) refuses Place order, Pay or Buy now without a matching yes, reads the page total, presses at most once, and sends unclear outcomes to the store's orders page instead of a second click. Only the owner's own chat turn can press; background jobs and helpers never can. A booking store (flights) also has its trip details checked against the yes: dates, flights, airports, passengers, and times and fare when given."
 provides_hooks:
   - pre_tool_call

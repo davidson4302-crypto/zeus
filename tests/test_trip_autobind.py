@@ -2,7 +2,7 @@
 import json
 import pytest
 
-from test_trip_soft_20261126 import (native_c, store_c, trip_soft, trip, rec, write_trips, on, seed, gate_env, REQ)  # noqa: F401
+from test_trip_soft import (native_c, store_c, trip_soft, trip, rec, write_trips, on, seed, gate_env, REQ)  # noqa: F401
 
 
 @pytest.fixture

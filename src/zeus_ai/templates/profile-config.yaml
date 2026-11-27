@@ -13,9 +13,7 @@ agent:
   session_stall_timeout: 300
   stall_guards: true
   budget_warning_ratio: 0.75
-  frozen_process_completion_origin: true
   max_turns: 30
-  replay_injected_context: false
   system_prompt: ' Your own email tools are agentmail_inbox_list, agentmail_message_read, agentmail_send and agentmail_send_status. They use only your assigned mailbox. Preserve real action approvals, STOPs and uncertain-send no-replay.'
 display:
   busy_ack_enabled: false
@@ -34,7 +32,6 @@ display:
   long_running_notifications: false
   live_status: false
   suppress_warning_notifications: true
-  session_reset_notice: concise
 memory:
   memory_enabled: true
   user_profile_enabled: true
@@ -59,7 +56,6 @@ skills:
   external_dirs: []
   create_dir: ${profile_dir}/learned-skills
   project_discovery: false
-  preserve_full_lookup_names: true
 terminal:
   cwd: ${profile_dir}/workspace
   timeout: 1800
@@ -68,7 +64,6 @@ terminal:
 cron:
   deliver_gate: true          # quiet hours: scheduled results and sends wait until the end of quiet hours (Zeus Hermes patch)
   wrap_response: false
-  review_missed_runs: false
   model: ${work_model}
   model_provider: ${model_provider}
   reasoning_effort: medium
@@ -76,21 +71,15 @@ delegation:
   provider: ${model_provider}
   model: ${work_model}
   reasoning_effort: medium
-  durable_stop: true
 platforms:
   photon:
     enabled: true
     extra:
       reactions: meaning
       link_bubbles: true
-      durable_delivery: true
     gateway_restart_notification: false
 browser:
   cdp_url: "http://127.0.0.1:${chrome_port}"
-  action_receipts:
-    enabled: true
-    screenshots: true
-    expected_timezone: ${owner_tz}
 timezone: ${owner_tz}
 tools:
   tool_search:

@@ -15,7 +15,7 @@ import types
 
 import pytest
 
-COPY = Path(__file__).resolve().parents[1]
+COPY = Path(__file__).resolve().parents[1] / 'src' / 'zeus_ai' / 'plugins' / 'zeus-work'
 ORIG = Path(os.environ['ORIG_Zeus_WORK']) if os.environ.get('ORIG_Zeus_WORK') else None
 sys.path.insert(0, str(COPY.parents[1] / 'engine'))
 import settings  # noqa: E402

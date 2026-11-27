@@ -342,7 +342,7 @@ class Watcher:
             if code is not None:
                 if code:
                     self.say(f"{self._t(self.clock())} timed work {key[0]} return runtime failed (exit {code}). "
-                             "The work record and native journal retain the send decision.")
+                             "The work record and Zeus's send record retain the send decision.")
                 del self.returns[key]
         if self.work_home is None:
             return

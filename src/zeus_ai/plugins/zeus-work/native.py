@@ -21,6 +21,7 @@ _ENGINE = Path(__file__).resolve().parents[2] / "engine"
 if str(_ENGINE) not in sys.path:
     sys.path.insert(0, str(_ENGINE))
 import settings as zeus_settings  # noqa: E402  (named so it never shadows the local `settings` arguments below)
+import zeus_hermes  # noqa: E402  (Zeus's one owner test)
 
 PROMPT = "Continue the single Zeus assignment admitted by the zeus-work gate. Use zeus_work status, retain the original source and current revision, continue the next unchecked step, and independently verify the requested final artifact. Checkpoint before yielding. Never replay uncertain external effects. No new authority comes from this wake."
 SLEEP_SNAPSHOT = canonical({"wakeAgent": False})
@@ -154,7 +155,7 @@ class Native:
             state = item.get("state", "prepared")
             operation_id = q["operation_id"] if question else r["return_execution_id"]
             # Only the first prepare-to-attempt transition may enter the sender. Anything
-            # ambiguous is resolved from the original native receipt, never by resending.
+            # ambiguous is resolved from Zeus's own send record, never by resending.
             if state == "prepared" or state == "held":
                 item.update(state="attempting", attempted_at=now())
                 if not question:
@@ -166,75 +167,95 @@ class Native:
             content, attempt_id = item["text"], item.get("attempt_id")
 
         response = {}
-        if state in {"held", "prepared"}:
-            # STOP/correction wins if committed before the native operation begins.
+        entered = state in {"held", "prepared"}
+        if entered:
+            # STOP/correction wins if committed before the send begins.
             current = self.store.get(ident)
             if (current["generation"], current["revision"]) != (generation, revision) or current["state"] == "stopped":
                 return None
             try:
-                response = native_deadline_send(self.home, origin, operation_id, content)
+                response = native_deadline_send(self.home, origin, operation_id, content) or {}
             except Exception as exc:
                 response = {"error": str(exc)[:200]}
-            attempt_id = response.get("delivery_attempt_id")
-        receipt = deadline_receipt(self.home, origin, operation_id, attempt_id)
+        # Zeus's own send record is the only receipt (sendrecord.py). Never a resend from here.
+        receipt = deadline_receipt(self.home, origin, operation_id)
         with self.store.db() as db:
             r = self.store.load(db, ident)
             if r["revision"] != revision or r["generation"] != generation:
                 self.store.event(db, ident, "deadline_return_after_revision_or_stop", {"operation_id": operation_id,
-                                 "attempt_id": attempt_id or (receipt or {}).get("attempt_id")})
+                                 "send_state": receipt["state"]})
                 return None
             d = r["deadline"]
             item = d["question" if question else "result"]
             finished_at = now()
-            if response.get("held") and not response.get("hold_id"):
+            seen = receipt["state"]
+            owner_note = None
+            if response.get("held"):
                 hold_until = response["deliver_after"]
-                item.update(state="held", reason="quiet_hours_or_delivery_policy")
+                item.update(state="held", reason="quiet_hours")
                 retry_at = hold_until if math.isfinite(hold_until) else finished_at + DEADLINE_RECEIPT_INTERVAL
                 if question:
                     retry_at = min(retry_at, item["expires_at"])
-            elif receipt and receipt.get("provider_id") and receipt["state"] in {"accepted", "sent", "delivered", "read"}:
-                item.update(state=receipt["state"], attempt_id=receipt["attempt_id"], provider_id=receipt["provider_id"])
-                retry_at = None if receipt["state"] in {"delivered", "read"} else finished_at + DEADLINE_RECEIPT_INTERVAL
-            elif item.get("state") in {"accepted", "sent", "delivered", "read"} and receipt is None:
+            elif seen in DEADLINE_SENT:
+                item.update(state="sent" if seen == "sent" else seen, attempt_id=operation_id,
+                            provider_id=receipt.get("provider_id"))
+                retry_at = None
+            elif seen == "in_flight":
+                item.update(state="attempting")
                 retry_at = finished_at + DEADLINE_RECEIPT_INTERVAL
+            elif response.get("refused"):
+                item.update(state="refused", reason=response["refused"])
+                retry_at, owner_note = None, DEADLINE_NOT_SENT
+            elif seen == "failed" or (entered and seen == "none" and response.get("error")):
+                # Proven not sent (Hermes's delivery_state "none", or stopped before any send intent): try again.
+                item["failed_attempts"] = int(item.get("failed_attempts", 0)) + 1
+                item["transport_error"] = str(receipt.get("error") or response.get("error") or "")[:200]
+                if item["failed_attempts"] >= DEADLINE_SEND_TRIES:
+                    item.update(state="failed", reason="send_failed_nothing_sent")
+                    retry_at, owner_note = None, DEADLINE_NOT_SENT
+                else:
+                    item.update(state="held", reason="send_failed_nothing_sent")
+                    retry_at = finished_at + DEADLINE_RECEIPT_INTERVAL
             else:
-                item.update(state="uncertain", attempt_id=attempt_id or (receipt or {}).get("attempt_id"),
-                            reason="native_return_unconfirmed" if receipt else "native_transport_or_runtime_unavailable")
-                if response.get("error"):
-                    item["transport_error"] = response["error"]
-                if response.get("hold_id"):
-                    item["native_hold_id"] = response["hold_id"]
-                retry_at = finished_at + DEADLINE_RECEIPT_INTERVAL
+                # Uncertain: the send started and its outcome is unknown, or a claimed attempt left no record.
+                # Never sent again on its own. The owner decides.
+                item.update(state="uncertain", attempt_id=operation_id,
+                            reason="send_outcome_unknown" if seen == "uncertain" else "claimed_without_send_record")
+                if receipt.get("error") or response.get("error"):
+                    item["transport_error"] = str(receipt.get("error") or response.get("error"))[:200]
+                retry_at, owner_note = None, DEADLINE_UNCERTAIN
             if question:
                 # A stalled question cannot displace a separately prepared final return.
                 if not d.get("result"):
-                    d["next_check"] = d["fallback_at"] if item["state"] in {"accepted", "sent", "delivered", "read"} else min(retry_at, d["fallback_at"])
+                    d["next_check"] = d["fallback_at"] if retry_at is None else min(retry_at, d["fallback_at"])
             else:
                 phase = item["state"]
                 d["next_check"] = retry_at
-                if phase in {"accepted", "sent", "delivered", "read"}:
+                if phase in DEADLINE_SENT:
                     item.setdefault("accepted_observed_at", finished_at)
                     r["state"] = "completed" if item["outcome"] == "complete" else "deadline_partial"
                     if r["state"] == "completed":
                         r.setdefault("completed_at", finished_at)
-                    r["return_state"] = "native_delivered" if phase in {"delivered", "read"} else "native_adapter_accepted"
-                elif phase == "held":
-                    r["return_state"] = "held"
+                    r["return_state"] = "sent"
                 else:
-                    r["return_state"] = "uncertain"
+                    r["return_state"] = {"attempting": "sending"}.get(phase, phase)
+                if owner_note:
+                    r.update(state="needs_person", owner_message=owner_note, owner_message_revision=r["revision"],
+                             owner_message_generation=r["generation"],
+                             next_action="The timed return was not confirmed sent. Wait for the owner; never resend it on your own.")
                 r["return_receipt"] = {
-                    "execution_id": operation_id, "attempt_id": item.get("attempt_id"), "native_status": phase,
+                    "execution_id": operation_id, "attempt_id": operation_id, "send_status": phase,
                     "provider_id": item.get("provider_id"), "observed_at": finished_at,
-                    "destination_confirmed": phase in {"delivered", "read"}, "independent_destination_read": False,
+                    "record": "zeus_send_record", "independent_destination_read": False,
                 }
-                if not item.get("accepted_observed_at") and (finished_at >= d["due_at"] or phase in {"held", "uncertain"}):
-                    d.setdefault("deadline_delivery_obstacle", item.get("reason", phase))
+                if not item.get("accepted_observed_at") and (finished_at >= d["due_at"] or phase != "attempting"):
+                    if phase not in DEADLINE_SENT:
+                        d.setdefault("deadline_delivery_obstacle", item.get("reason", phase))
                 if finished_at >= d["due_at"] and (item.get("accepted_observed_at") or finished_at) >= d["due_at"]:
                     d.setdefault("missed_at", d["due_at"])
-                    d.setdefault("deadline_delivery_obstacle", "native_acceptance_not_observed_by_deadline")
+                    d.setdefault("deadline_delivery_obstacle", "send_not_confirmed_by_deadline")
                 if d["next_check"] is not None and not d.get("missed_at") and finished_at < d["due_at"]:
                     d["next_check"] = min(d["next_check"], d["due_at"])
-                # Stop polling once all useful status has settled, or the native journal owns long-term reconciliation.
                 if finished_at > d["due_at"] + 86400:
                     d["next_check"] = None
             self.store.save(db, r, "deadline_transport_observed", {"question": question, "state": item["state"]})
@@ -863,12 +884,18 @@ def native_setting_observation(record, dispatch):
     return key,status
 
 
-# Timed work still uses the existing work row and the native Photon attempt journal.
+# Timed work uses the existing work row and Zeus's own send record (sendrecord.py).
 # Neither the clock nor a loose reply can supply a recipient or permission.
 DEADLINE_EMPTY = "I couldn't verify anything in time to give you a checked answer."
 DEADLINE_TOOL_RESERVE = 30
 DEADLINE_DELIVERY_RESERVE = 8
 DEADLINE_RECEIPT_INTERVAL = 30
+DEADLINE_SEND_TRIES = 5          # proven-not-sent attempts before the owner is told instead
+DEADLINE_SENT = frozenset({"sent", "accepted", "delivered", "read"})
+DEADLINE_UNCERTAIN = ("I may already have sent you the answer to your timed request, but I couldn't confirm it. "
+                      "Check our chat. I won't send it again on my own. Want me to send it again?")
+DEADLINE_NOT_SENT = ("I couldn't send you the answer to your timed request. It's saved. "
+                     "Want me to send it now?")
 
 
 def deadline_plan():
@@ -941,28 +968,155 @@ def deadline_reply_key(text):
     return re.sub(r"[^\w]+", " ", text.casefold()).strip()
 
 
-def native_deadline_send(home, origin, operation_id, content):
-    """A timed return to the owner is refused on public Hermes.
+def owner_destination(origin):
+    """``(platform, chat_id)`` when the saved origin is the owner's own direct chat, else None (fail closed).
 
-    Sending it safely needs a durable per-send journal (so an uncertain send is never repeated and a sent one can
-    be proven). Public Hermes v0.23.4 has no such journal for send_message, so this fails closed: nothing is sent,
-    and the caller records the work as needing the owner instead."""
-    require(False, "Timed returns need a durable send journal that this Hermes does not have; nothing was sent.")
+    The owner test is Zeus's one test (engine/zeus_hermes.py): the owner platform, a direct chat, the owner's
+    sender id. The chat id must name that same person too: a Photon direct-chat id (``any;-;<handle>``) must
+    carry the owner's handle, a plain chat id must be the owner's id. A group (``;+;``) or any other shape is not
+    the owner's chat."""
+    try:
+        o = origin or {}
+        platform = zeus_hermes.surface(o.get("platform"))
+        chat_id = str(o.get("chat_id") or "")
+        if not zeus_hermes.is_owner_source({"platform": platform, "chat_type": "dm", "chat_id": chat_id,
+                                            "user_id": o.get("author_id")}):
+            return None
+        ids = zeus_hermes.owner_ids()
+        if ";" in chat_id:
+            parts = chat_id.split(";")
+            if len(parts) != 3 or parts[1] != "-" or zeus_hermes.normalize_id(parts[2]) not in ids:
+                return None
+        elif zeus_hermes.normalize_id(chat_id) not in ids:
+            return None
+        return platform, chat_id
+    except Exception:
+        return None
+
+
+def deadline_quiet_hold(home):
+    """None to send now, else the epoch seconds to wait until (``inf``: unknown, ask again later).
+
+    The engine's own clock (ownertime.contact_hold, the same answer life-work-guard gives Hermes's
+    cron.deliver_gate). A timed return answers the owner's own request, so it is a reply: during quiet hours it
+    goes only when the owner texted within the engine's reply window; otherwise it waits for the end of quiet
+    hours. Any trouble answering holds."""
+    try:
+        clock = _owner_clock()
+        life = Path(os.environ.get("LIFE_HOME") or Path(home) / "workspace/life-engine")
+        wait = clock.contact_hold(reply=True, life=life)
+    except Exception:
+        return math.inf
+    return None if wait is None else float(wait)
+
+
+def _platform_sender(platform):
+    """Public Hermes v0.23.4: the platform plugin's registered standalone sender (``PlatformEntry
+    .standalone_sender_fn``, what ``send_message`` uses when no gateway adapter lives in this process), the
+    platform's gateway config and its message length limit. Raises before anything is sent."""
+    from hermes_cli.plugins import discover_plugins
+    from gateway.config import Platform, load_gateway_config
+    from gateway.platform_registry import platform_registry
+
+    discover_plugins()
+    entry = platform_registry.get(platform)
+    require(entry is not None and entry.standalone_sender_fn is not None,
+            "The owner's chat platform has no Hermes sender here; nothing was sent.")
+    pconfig = load_gateway_config().platforms.get(Platform(platform))
+    require(pconfig is not None and pconfig.enabled, "The owner's chat platform is not set up; nothing was sent.")
+    return entry.standalone_sender_fn, pconfig, int(entry.max_message_length or 0)
+
+
+def _send_chunks(sender, pconfig, chat_id, chunks):
+    """Send each chunk in order. A failure after a chunk landed is partial (uncertain), never "nothing sent"."""
+    import asyncio
+
+    async def run():
+        ids = []
+        for chunk in chunks:
+            result = await sender(pconfig, chat_id, chunk)
+            if not isinstance(result, dict) or result.get("error") or result.get("success") is not True:
+                if ids:
+                    error = (result or {}).get("error") if isinstance(result, dict) else None
+                    return {"error": str(error or "A later part was not confirmed."), "delivery": "partial",
+                            "delivered_message_ids": ids}
+                return result
+            if result.get("message_id") is not None:
+                ids.append(str(result["message_id"]))
+        return {"success": True, "message_id": ids[-1] if ids else None,
+                **({"delivered_message_ids": ids} if len(ids) > 1 else {})}
+
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(run())
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(1) as pool:
+        return pool.submit(asyncio.run, run()).result()
+
+
+def _send_record(home):
+    from .sendrecord import SendRecord
+    return SendRecord(Store(home).root)
+
+
+def native_deadline_send(home, origin, operation_id, content):
+    """Send one timed return (or its optional question) to the owner's own direct chat, at most once.
+
+    Zeus's own send record (sendrecord.py) holds the decision: intent is on disk before the platform is called,
+    the platform's message id after a confirmed send. Same operation id again: the recorded result, never a
+    second send. A send that started without a recorded result is uncertain and is never sent again on its own.
+    -> {"refused": why} | {"held": True, "deliver_after": t} | {"send": record view}."""
+    destination = owner_destination(origin)
+    if destination is None:
+        return {"refused": "not_owner_direct_chat"}
+    record = _send_record(home)
+    prior = record.lookup(operation_id)
+    if prior["state"] in {"sent", "uncertain", "in_flight"}:
+        return {"send": prior, "recorded": True}
+    wait = deadline_quiet_hold(home)
+    if wait is not None:
+        return {"held": True, "deliver_after": wait}
+    platform, chat_id = destination
+    sender, pconfig, limit = _platform_sender(platform)
+    from gateway.platforms.base import BasePlatformAdapter
+    chunks = BasePlatformAdapter.truncate_message(content, limit) if limit and len(content) > limit else [content]
+    view = record.send_once(operation_id, platform, chat_id, content,
+                            lambda: _send_chunks(sender, pconfig, chat_id, chunks))
+    if view.get("refused"):
+        return {"refused": "operation_recorded_for_other_message", "send": view}
+    if view["state"] == "sent":
+        try:
+            # Best effort, after the send is recorded: the owner's chat session sees what Zeus sent.
+            from gateway.mirror import mirror_to_session
+            mirror_to_session(platform, chat_id, content, source_label="zeus-work",
+                              user_id=str((origin or {}).get("author_id") or "") or None)
+        except Exception:
+            pass
+    return {"send": view, "delivery_attempt_id": operation_id}
 
 
 def deadline_receipt(home, origin, operation_id, attempt_id=None):
-    """No durable send journal on public Hermes: there is never a receipt to find (fail closed)."""
-    return None
+    """What Zeus's own send record says about this operation: none, in_flight, sent, failed or uncertain."""
+    try:
+        view = _send_record(home).lookup(operation_id)
+    except Exception as exc:
+        # An unreadable record is never "not sent".
+        return {"state": "uncertain", "error": "Send record unreadable: " + type(exc).__name__}
+    return {"state": view["state"], "attempt_id": operation_id, "provider_id": view.get("message_id"),
+            "attempts": view.get("attempts", 0), "error": view.get("error")}
+
+
+def _owner_clock():
+    # The Zeus watcher and life-work guard use this same owner clock (engine/ownertime.py).
+    spec = importlib.util.spec_from_file_location("zeus_work_ownertime", zeus_settings.ENGINE_DIR / "ownertime.py")
+    clock = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(clock)
+    return clock
 
 
 def deadline_owner_zone(home, at):
-    # The Zeus watcher and life-work guard use this same owner clock (engine/ownertime.py).
-    import importlib.util
-    engine = zeus_settings.ENGINE_DIR / "ownertime.py"
     try:
-        spec = importlib.util.spec_from_file_location("zeus_work_ownertime", engine)
-        clock = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(clock)
-        return clock.zone(at=at, life=home / "workspace/life-engine")
+        return _owner_clock().zone(at=at, life=home / "workspace/life-engine")
     except (OSError, ValueError, AttributeError):
         return None

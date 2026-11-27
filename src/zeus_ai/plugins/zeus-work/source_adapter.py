@@ -28,6 +28,19 @@ def native_text(value):
             raise ValueError('Native user text must be a string')
     return ''.join(part['text'] for part in value if part['type'] in {'text','input_text'})
 
+def is_owner(source):
+    """Zeus's one owner test for a saved-work source: a local operator only when Zeus allows the CLI, else the
+    owner's own direct chat on the owner platform. Anything unknown is not the owner."""
+    try:
+        import zeus_hermes
+        if not isinstance(source,dict):return False
+        if source.get('origin') in {'local_operator','desktop_submit'}:return zeus_hermes.allow_cli()
+        if (source.get('audience') or {}).get('kind')!='private_owner' or source.get('origin')!='direct':return False
+        return zeus_hermes.is_owner_source({'platform':source.get('platform'),'chat_type':'dm',
+                                            'chat_id':source.get('chat_id'),'user_id':source.get('author_id')})
+    except Exception:
+        return False
+
 class SourceAdapter:
     def __init__(self,ctx,home):
         self.ctx=ctx;self.home=Path(home).resolve();self.lock=threading.RLock()
@@ -54,8 +67,9 @@ class SourceAdapter:
         return value
 
     def visible(self,record,source):
-        """Saved work in this profile belongs to its one owner."""
-        return bool(isinstance(source,dict) and source.get('profile_home')==str(self.home))
+        """Saved work in this profile belongs to its one owner, so only an owner turn in this profile sees it.
+        Anyone else (another number, a group, a helper, a garbled source) sees none of it and cannot stop it."""
+        return bool(isinstance(source,dict) and source.get('profile_home')==str(self.home) and is_owner(source))
 
     def clear(self,session_id=None,**kwargs):
         return None

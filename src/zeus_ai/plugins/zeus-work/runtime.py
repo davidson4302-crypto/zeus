@@ -171,13 +171,9 @@ class Runtime:
         self.registered_home=home()  # admission hooks may run under another profile's context
 
     def owner_source(self,source):
-        """The owner, by Zeus's one owner test: a local operator only when Zeus allows the CLI, else the owner's own
-        direct chat on the owner platform. Anything unknown is not the owner."""
-        if not isinstance(source,dict):return False
-        if source.get('origin') in {'local_operator','desktop_submit'}:return zeus_hermes.allow_cli()
-        if (source.get('audience') or {}).get('kind')!='private_owner' or source.get('origin')!='direct':return False
-        return zeus_hermes.is_owner_source({'platform':source.get('platform'),'chat_type':'dm',
-                                            'chat_id':source.get('chat_id'),'user_id':source.get('author_id')})
+        """The owner, by Zeus's one owner test (source_adapter.is_owner). Anything unknown is not the owner."""
+        from .source_adapter import is_owner
+        return is_owner(source)
 
     def stop_records(self,records,source,ids=(),where=None):
         where=where or home();store=Store(where);native=Native(where);results=[]

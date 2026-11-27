@@ -337,9 +337,12 @@ def test_quiet_replies_human_turn_uses_public_turn_metadata(manager):
 
 def test_zeus_work_sources_and_timed_sends_fail_closed(manager):
     native = next(m for k, m in sys.modules.items() if k.endswith('zeus_work.native') or k.endswith('zeus-work.native'))
-    with pytest.raises(ValueError):
-        native.native_deadline_send(HOME, {'chat_id': OWNER_CHAT, 'author_id': OWNER}, 'op1', 'hi')
-    assert native.deadline_receipt(HOME, {}, 'op1') is None
+    # A timed send goes only to the owner's own direct chat (tests/test_timed_returns.py covers the send itself).
+    assert native.native_deadline_send(HOME, {'chat_id': OWNER_CHAT, 'author_id': OWNER}, 'op1', 'hi') == {
+        'refused': 'not_owner_direct_chat'}
+    assert native.native_deadline_send(HOME, {'platform': 'photon', 'chat_id': 'any;-;' + STRANGER,
+                                              'author_id': STRANGER}, 'op1', 'hi') == {'refused': 'not_owner_direct_chat'}
+    assert native.deadline_receipt(HOME, {}, 'op1')['state'] == 'none'
     src_mod = next(m for k, m in sys.modules.items() if k.endswith('zeus_work.source_adapter') or k.endswith('zeus-work.source_adapter'))
     sources = src_mod.SourceAdapter(SimpleNamespace(get_config=lambda k, d=None: d), HOME)
     with turn(user=STRANGER):

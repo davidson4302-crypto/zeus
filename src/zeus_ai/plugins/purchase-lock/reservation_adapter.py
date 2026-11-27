@@ -375,7 +375,7 @@ def main():
 if __name__=='__main__':
     sys.exit(main())
 
-# These functions are invoked by Zeus's native purchase-lock in the browser child.
+# Called by Zeus's purchase lock (buyfence.Fence.judge_reservation) in the browser child, on the press itself.
 def snapshot_from_probe(probe):
     return {'url':probe['href'],'text':probe.get('text',''),'buttons':[b['labels'][0] for b in probe.get('buttons',[]) if b.get('labels')]}
 
@@ -405,28 +405,3 @@ def gate(path,tab,probe,claim,sandbox=None):
         if claim:
             save(con,r,'awaiting_receipt',why='Submitted or outcome unknown. Read the provider confirmation before any other action.')
         return r['key']
-
-def locked_click(fence, ar, call, action, decision):
-    """Consume the yes at the last native dispatch. A lost response leaves an open receipt."""
-    initial=ar.dispatch_click
-    fired=False
-    path=fence.life.parent.parent/'state'/'reservations'
-    sandbox=None if path.resolve()==(PROFILE/'state'/'reservations').resolve() else path.parent.parent
-    def guarded(x,y,*args,**kwargs):
-        nonlocal fired
-        require(not fired,'This one-use approval already reached dispatch.')
-        tab=ar.raw['current_tab']()['targetId']
-        probe=fence.probe(ar,[x,y])
-        key=gate(path,tab,probe,True,sandbox)
-        require(key==decision['reservation_key'],'The selected reservation changed.')
-        fired=True
-        return initial(x,y,*args,**kwargs)
-    ar.dispatch_click=guarded
-    try:
-        result=call()
-        if isinstance(result,dict) and fired:
-            result['purchase_lock']={'reservation':decision['reservation_key'],'pressed':1,'state':'awaiting_receipt'}
-            ar.save()
-        return result
-    finally:
-        ar.dispatch_click=initial
